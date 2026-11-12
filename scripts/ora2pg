@@ -30,6 +30,9 @@ use File::Spec;
 use POSIX qw(locale_h sys_wait_h _exit);
 setlocale(LC_NUMERIC, '');
 setlocale(LC_ALL,     'C');
+# Cyrillic identifiers: avoid "Wide character in print" on STDERR/STDOUT.
+binmode(STDOUT, ':utf8');
+binmode(STDERR, ':utf8');
 
 my $VERSION = $Ora2Pg::VERSION;
 
