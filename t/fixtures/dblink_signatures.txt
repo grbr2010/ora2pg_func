@@ -1,0 +1,13 @@
+# TEST signatures only: parameter names are invented for the tests.
+# Real ones must be taken from ALL_ARGUMENTS on the real database.
+# LINK|KIND|PATH|SPEC
+ERPDB|COLUMN|erps.ext_checks.check_id|NUMBER(15)
+ERPDB|TABLE|erps.erp_accounts|acc_code VARCHAR2(30), acc_name VARCHAR2(240), active NUMBER, amt NUMBER(12,2) NOT NULL; PK acc_code
+ERPDB|FUNCTION|erps.erp_iface_pkg.check_state|RETURN VARCHAR2; p_ref IN VARCHAR2
+ERPDB|PROCEDURE|erps.erp_budget_pkg.get_budget_data|p_per IN VARCHAR2, p_cfo IN VARCHAR2, p_acc IN NUMBER, p_plan OUT NUMBER, p_plan_corr OUT NUMBER, p_fact OUT NUMBER, p_avail OUT NUMBER
+ERPDB|PROCEDURE|erps.pkg.upd|p_x IN OUT NUMBER
+
+this line is broken
+ERPDB|FUNCTION|erps.pkg.bad|no return here
+ERPDB|PROCEDURE|erps.erp_iface_pkg.get_item_attrs|p_cfo IN VARCHAR2, p_statya IN VARCHAR2, x_code_combination_id OUT NUMBER, x_category_id OUT NUMBER, x_err_msg OUT VARCHAR2, p_inv_type IN VARCHAR2
+ERPDB|PROCEDURE|erps.erp_iface_pkg.add_group_code|p_code IN VARCHAR2

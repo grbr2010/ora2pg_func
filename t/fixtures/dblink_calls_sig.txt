@@ -1,0 +1,3 @@
+# TEST signatures for t/05_dblink_calls.t
+ERPDB|FUNCTION|erps.erp_reserve_pkg.check_reserve_exist|RETURN NUMBER; p_x IN VARCHAR2
+WHDB_BAK|FUNCTION|wh.rate|RETURN NUMBER; p_cd IN VARCHAR2, p_d IN DATE, p_n IN NUMBER

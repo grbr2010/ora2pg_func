@@ -1,0 +1,7 @@
+# TEST signatures for t/06_dblink_procs.t (parameter names are invented where not seen in the sources)
+ERPDB|PROCEDURE|erps.erp_budget_pkg.get_budget_data|p_per IN VARCHAR2, p_cfo IN VARCHAR2, p_acc IN VARCHAR2, p_plan OUT NUMBER, p_plan_corr OUT NUMBER, p_fact OUT NUMBER, p_avail OUT NUMBER
+ERPDB|PROCEDURE|erps.erp_iface_pkg.get_item_attrs|p_cfo IN VARCHAR2, p_statya IN VARCHAR2, x_code_combination_id OUT NUMBER, x_category_id OUT NUMBER, x_err_msg OUT VARCHAR2, p_inv_type IN VARCHAR2
+ERPDB|PROCEDURE|erps.erp_iface_pkg.add_group_code|p_code IN VARCHAR2
+ERPDB|PROCEDURE|erps.pkg.io|a IN OUT VARCHAR2, d IN OUT DATE
+ERPDB|PROCEDURE|erps.pkg.getclob|c OUT CLOB
+ERPDB|PROCEDURE|erps.pkg.two|x OUT NUMBER
