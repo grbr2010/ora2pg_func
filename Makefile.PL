@@ -1271,7 +1271,7 @@ USE_ORAFCE	0
 DBLINK_MODE	off
 
 # Map of database link name to the foreign server name, LINK:server pairs
-# separated by spaces, e.g. LINKA:erp_main. The link name is case insensitive.
+# separated by spaces, e.g. PROD:erp_main. The link name is case insensitive.
 #DBLINK_SERVER
 
 # Object names (space separated, case insensitive) excluded from database link

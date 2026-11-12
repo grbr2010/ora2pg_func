@@ -2920,7 +2920,7 @@ C<fdw>, enabling the translation through oracle_fdw foreign servers.
 =item DBLINK_SERVER
 
 Map of database link name to foreign server name, as C<LINK:server> pairs
-separated by spaces, e.g. C<LINKA:linka_extcust>. The link name is case insensitive.
+separated by spaces, e.g. C<PROD:prod_extcust>. The link name is case insensitive.
 Without an entry the server is named C<E<lt>databaseE<gt>_E<lt>loginE<gt>>: the
 database alias of the link and the remote user, lower case, so links that
 connect to the same database as the same user share one server. The
