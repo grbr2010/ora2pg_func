@@ -20,7 +20,7 @@ like(norm($out), qr/\Q$exp\E/, 'named -> oracle_exec');
 my $src = slurp("$Bin/fixtures/ddl/cast_call.sql");
 my $call = q{oracle_call('rdb1', 'RSCH.REM_RESERVE_PKG.VERIFY_ITEM_EXIST', (numb_||'/'||r_cur.товар)::text)};
 ($out) = convert("BEGIN\n$src END;", dblink_signatures => $sig);
-like(norm($out), qr/\Q$call\E::(?:numeric|bigint|integer|double precision)/, 'cast by RETURN NUMBER');
+like(norm($out), qr{\Qfdw_rdb1_rsch_rem_reserve_pkg.verify_item_exist(numb_||'/'||r_cur.товар)\E}, 'signature -> typed wrapper (T9)');
 ($out) = convert("BEGIN\n$src END;");
 like(norm($out), qr/\Q$call\E \/\* TODO dblink type \*\//, 'no signature -> TODO type');
 
@@ -28,8 +28,11 @@ like(norm($out), qr/\Q$call\E \/\* TODO dblink type \*\//, 'no signature -> TODO
 $src = 'select 1 from t d where sw.rate@dbb_bak(d.k_vf, d.dfrom,1)<>0';
 ($out) = convert($src);
 like(norm($out), qr/\Qoracle_call('dbb_bak', 'sw.rate', (d.k_vf)::text, (d.dfrom)::text, (1)::text)\E/, 'view call');
+# 2 of 3 required arguments: no wrapper, T5 output with the DATE bind
+($out) = convert('select 1 from t d where sw.rate@dbb_bak(d.k_vf, d.dfrom)<>0', dblink_signatures => $sig);
+like(norm($out), qr/\Qoracle_call('dbb_bak', 'sw.rate', (d.k_vf)::text, to_char((d.dfrom), 'YYYY-MM-DD HH24:MI:SS'))\E/, 'DATE bind');
 ($out) = convert($src, dblink_signatures => $sig);
-like(norm($out), qr/\Qoracle_call('dbb_bak', 'sw.rate', (d.k_vf)::text, to_char((d.dfrom), 'YYYY-MM-DD HH24:MI:SS'), (1)::text)\E/, 'DATE bind');
+like(norm($out), qr/\Qfdw_dbb_bak_sw.rate(d.k_vf, d.dfrom, 1)\E/, 'complete call -> wrapper');
 
 # 4. nested
 ($out) = convert("BEGIN x := a.f\@rdb1(a.g\@rdb1(1)); END;");

@@ -1288,6 +1288,14 @@ DBLINK_SCHEMA_PREFIX	fdw_
 # FUNCTION (SPEC: RETURN TYPE; arg IN|OUT|IN OUT TYPE, ...) or PROCEDURE (args only).
 #DBLINK_SIGNATURES
 
+# Wrappers of remote functions (file dblink_functions_*.sql): 1 creates them as
+# SECURITY DEFINER with search_path = pg_catalog, DBLINK_EXT_SCHEMA. Default is 0.
+DBLINK_WRAPPER_DEFINER	0
+
+# Schema of the oracle_fdw extension (functions oracle_scalar, oracle_exec), used in
+# the search_path of SECURITY DEFINER wrappers.
+DBLINK_EXT_SCHEMA	public
+
 # Enable translation of autonomous transactions into a wrapper function
 # using dblink or pg_background extension. If you don't want to use this
 # translation and just want the function to be exported as a normal one

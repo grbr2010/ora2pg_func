@@ -62,7 +62,7 @@ DECLARE
 
 BEGIN
       l_state :=
-         oracle_exec('rdb1', $ora$BEGIN :p0 := rsch.rem_iface_pkg.verify_state(p_ref => :p1); END;$ora$, (p_ref)::text);
+         fdw_rdb1_rsch_rem_iface_pkg.verify_state(p_ref => p_ref);
       RETURN l_state;
    END;
 $body$

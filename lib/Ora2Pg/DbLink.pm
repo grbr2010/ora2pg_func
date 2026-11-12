@@ -191,8 +191,9 @@ sub _parse_spec
 		$a =~ /^([\w\$#]+)\s+(IN\s+OUT|IN|OUT)\s+(.+)$/i or return undef;
 		my ($n, $m, $t) = ($1, uc $2, $3);
 		$m =~ s/\s+/\//;
+		my $def = $t =~ s/\s+DEFAULT\s*$//i;
 		$t =~ s/\s*\(.*\)\s*$//;
-		push @{$r{args}}, { name => $n, mode => $m, type => uc $t };
+		push @{$r{args}}, { name => $n, mode => $m, type => uc $t, ($def ? (default => 1) : ()) };
 	}
 	return \%r;
 }
@@ -208,11 +209,14 @@ sub _load_signatures
 	while (my $l = <$fh>) {
 		next if $l =~ /^\s*(?:#|$)/;
 		$l =~ s/\s+$//;
-		my ($link, $kind, $path, $spec) = split /\|/, $l, 4;
+		my ($link, $kind, $path, $spec, $flags) = split /\|/, $l, 5;
 		$kind = uc($kind // '');
 		my $r = (defined $spec && $kind =~ /^(?:COLUMN|TABLE|FUNCTION|PROCEDURE)$/ && length $path)
 			? _parse_spec($kind, $spec) : undef;
 		unless ($r) { _warn($class, "DBLINK_SIGNATURES $f line $.: bad format, skipped"); next; }
+		my @bad = grep { $_ ne 'MODIFIES' } map { s/^\s+|\s+$//gr } map { uc } split /,/, $flags // '';
+		if (@bad) { _warn($class, "DBLINK_SIGNATURES $f line $.: unknown flag '$bad[0]', skipped"); next; }
+		$r->{modifies} = 1 if ($flags // '') =~ /\S/;
 		if ($kind eq 'TABLE') {
 			my @p = split /\./, $path;
 			@$r{qw(owner name)} = (@p > 1 ? uc $p[-2] : undef, uc $p[-1]);
@@ -272,16 +276,16 @@ sub _live_routine
 		: @segs == 2 ? ([ $segs[0], '-', $segs[1] ], [ _schema($class, $L), @segs ])
 		: ([ _schema($class, $L), '-', $segs[0] ]);
 	for my $t (@try) {
-		my $rows = _q($class, "SELECT argument_name, position, in_out, data_type, overload FROM all_arguments\@$L WHERE owner = ? AND NVL(package_name, '-') = ? AND object_name = ? AND data_level = 0 ORDER BY overload, position", @$t);
+		my $rows = _q($class, "SELECT argument_name, position, in_out, data_type, overload, defaulted FROM all_arguments\@$L WHERE owner = ? AND NVL(package_name, '-') = ? AND object_name = ? AND data_level = 0 ORDER BY overload, position", @$t);
 		next unless @$rows;
 		my %ov = map { $_->[4] => 1 } grep { defined $_->[4] } @$rows;
 		if (keys %ov > 1) { _warn($class, "$L: overloaded routine " . join('.', @$t) . " is not supported"); return undef; }
 		my %r = (type => 'PROCEDURE', return => undef, args => []);
 		for my $r (@$rows) {
-			my ($n, $pos, $io, $dt) = @$r;
+			my ($n, $pos, $io, $dt, undef, $defd) = @$r;
 			if ($pos == 0) { @r{qw(type return)} = ('FUNCTION', $dt); next; }
 			next unless defined $dt;	# procedure without arguments
-			push @{$r{args}}, { name => $n, mode => $io, type => $dt };
+			push @{$r{args}}, { name => $n, mode => $io, type => $dt, (($defd // '') eq 'Y' ? (default => 1) : ()) };
 		}
 		return \%r;
 	}
@@ -479,6 +483,80 @@ sub _stmt_call
 	return "$v := $new;\n" . join(";\n", map { $_ . ' := nullif(split_part(' . "$v, chr(30), " . ++$j . '), chr(31))' } @outs);
 }
 
+# Oracle types a typed wrapper can carry -> PG type; undef = no wrapper
+sub _wrap_type
+{
+	my ($class, $t) = @_;
+	$t = uc($t // '');
+	return 'integer' if $t =~ /^(?:INTEGER|BINARY_INTEGER|PLS_INTEGER)$/;
+	return 'text' if $t =~ /^(?:VARCHAR2|CHAR|NVARCHAR2|NCHAR)$/;
+	return 'timestamp(0)' if $t eq 'DATE';
+	return _pg_type($class, { type => $t }) if $t eq 'NUMBER' || $t eq 'FLOAT';
+	return undef;
+}
+
+# typed PG wrapper for a remote function (T9): registers its DDL, returns the call text or undef
+# shortcut: parameter names are not checked against PG reserved words, rename in the signature file if CREATE fails
+sub _wrapper
+{
+	my ($class, $link, $path, $sig, $args) = @_;
+	return undef unless $sig && ($sig->{type} // '') eq 'FUNCTION' && $sig->{return};
+	return undef if $path =~ /"/;
+	my @segs = split /\./, $path;
+	return undef if @segs < 1 || @segs > 3;
+	my $ret = _wrap_type($class, $sig->{return}) // return undef;
+	my @sa = @{$sig->{args}};
+	my $named = grep { defined $_->{name} } @$args;
+	my $n;
+	if ($named) {
+		return undef if $named != @$args;	# mixed positional and named
+		my %pos = map { uc($sa[$_]{name} // '') => $_ + 1 } 0 .. $#sa;
+		my %seen;
+		for my $a (@$args) { $seen{ $pos{uc $a->{name}} // return undef } = 1; }
+		$n = (sort { $b <=> $a } keys %seen)[0];
+		return undef if keys %seen != $n || @$args != $n;	# every parameter 1..n named exactly once
+	} else {
+		$n = @$args;
+		return undef if $n > @sa || grep { !$_->{default} } @sa[$n .. $#sa];
+	}
+	my @p = @sa[0 .. $n - 1];
+	my (@decl, @types);
+	for my $p (@p) {
+		my $t = ($p->{mode} // '') eq 'IN' ? _wrap_type($class, $p->{type}) : undef;
+		my $nm = lc($p->{name} // '');
+		return undef unless defined $t && $nm =~ /^[a-z_][a-z0-9_]*$/;
+		push @decl, "$nm $t";
+		push @types, $t;
+	}
+	my $name = lc $segs[-1];
+	return undef unless $name =~ /^[a-z_][a-z0-9_\$]*$/;
+	my $server = server_for($class, $link);
+	my $sch = _fdw_schema($class, $server, @segs > 1 ? join('_', @segs[0 .. $#segs - 1]) : undef);
+	{ use bytes; return undef if length($sch) > 63; }
+	my $fmt = "'YYYY-MM-DD HH24:MI:SS'";
+	my (@bind, @ora);
+	for my $i (1 .. $n) {
+		my $d = $types[$i - 1] eq 'timestamp(0)';
+		my $b = $sig->{modifies} ? ":p$i" : ":$i";
+		push @ora, $d ? "TO_DATE($b, $fmt)" : $b;
+		push @bind, $d ? "to_char(\$$i, $fmt)" : "\$$i\::text";
+	}
+	my $call = $path . (@ora ? '(' . join(', ', @ora) . ')' : '');
+	$call = "TO_CHAR($call, $fmt)" if $ret eq 'timestamp(0)';
+	my $body = $sig->{modifies}
+		? "SELECT oracle_exec('$server', \$ora\$BEGIN :p0 := $call; END;\$ora\$" . join('', map { ", $_" } @bind) . ")::$ret"
+		: "SELECT oracle_scalar('$server', \$ora\$SELECT $call FROM dual\$ora\$"
+			. (@bind ? ",\n    ARRAY[" . join(', ', @bind) . ']' : '') . ")::$ret";
+	my $sec = $class->{dblink_wrapper_definer}
+		? ' SECURITY DEFINER SET search_path = pg_catalog, ' . ($class->{dblink_ext_schema} || 'public') : '';
+	my $fn = "$sch.$name";
+	$class->{dblink_funcs}{"$fn/$n"} //= "CREATE SCHEMA IF NOT EXISTS $sch;\n"
+		. "CREATE OR REPLACE FUNCTION $fn(" . join(', ', @decl) . ")\n"
+		. "RETURNS $ret LANGUAGE sql$sec AS \$fn\$\n  $body\n\$fn\$;\n"
+		. "REVOKE ALL ON FUNCTION $fn(" . join(', ', @types) . ") FROM PUBLIC;\n";
+	return "$fn(" . join(', ', map { (defined $_->{name} ? lc($_->{name}) . ' => ' : '') . $_->{expr} } @$args) . ')';
+}
+
 # value call -> oracle_call/oracle_exec; undef = leave to the caller (statement call, odd expr)
 sub _value_call
 {
@@ -500,6 +578,7 @@ sub _value_call
 	return _stmt_call($class, $sref, $r, \@args, $end)
 		if $r->{kind} eq 'call' && $after =~ /^;/ && ($before eq '' || $before =~ /(?:;|\b(?:BEGIN|THEN|ELSE|LOOP|DECLARE))$/i);
 	my $sig = meta($class, $link, 'ROUTINE', $path);
+	if (my $w = _wrapper($class, $link, $path, $sig, \@args)) { $r->{_end} = $end; return $w; }
 	my $i = 0;
 	for my $a (@args) {
 		my ($sa) = $sig ? (defined $a->{name} ? grep({ uc $_->{name} eq uc $a->{name} } @{$sig->{args}}) : $sig->{args}[$i]) : ();
@@ -601,11 +680,17 @@ sub foreign_tables_sql
 sub write_tables_file
 {
 	my ($self) = @_;
-	return unless ($self->{dblink_mode} // 'off') eq 'fdw' && %{$self->{dblink_used} || {}};
-	my $fh = $self->open_export_file('dblink_tables_' . lc($self->{type}) . '.sql');
-	$self->set_binmode($fh) if (!$self->{compress});
-	$self->dump(foreign_tables_sql($self), $fh);
-	$self->close_export_file($fh);
+	return unless ($self->{dblink_mode} // 'off') eq 'fdw';
+	my %text;
+	$text{tables} = foreign_tables_sql($self) if %{$self->{dblink_used} || {}};
+	$text{functions} = join("\n", map { $self->{dblink_funcs}{$_} } sort keys %{$self->{dblink_funcs}}) if %{$self->{dblink_funcs} || {}};
+	for my $w (qw(tables functions)) {
+		next unless defined $text{$w};
+		my $fh = $self->open_export_file("dblink_${w}_" . lc($self->{type}) . '.sql');
+		$self->set_binmode($fh) if (!$self->{compress});
+		$self->dump($text{$w}, $fh);
+		$self->close_export_file($fh);
+	}
 }
 
 # ---- view whose sources all live on one link -> foreign table on a query ----

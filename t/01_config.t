@@ -39,6 +39,13 @@ $o = from_config('DBLINK_SCHEMA_PREFIX x_', 'DBLINK_SIGNATURES sig.txt');
 is($o->{dblink_schema_prefix}, 'x_', 'DBLINK_SCHEMA_PREFIX is taken from config');
 is($o->{dblink_signatures}, 'sig.txt', 'DBLINK_SIGNATURES is taken from config');
 
+$o = from_config();
+is($o->{dblink_wrapper_definer}, 0, 'DBLINK_WRAPPER_DEFINER defaults to 0');
+is($o->{dblink_ext_schema}, 'public', 'DBLINK_EXT_SCHEMA defaults to public');
+$o = from_config('DBLINK_WRAPPER_DEFINER 1', 'DBLINK_EXT_SCHEMA ext');
+is($o->{dblink_wrapper_definer}, 1, 'DBLINK_WRAPPER_DEFINER is taken from config');
+is($o->{dblink_ext_schema}, 'ext', 'DBLINK_EXT_SCHEMA is taken from config');
+
 # An unknown DBLINK_MODE is fatal: logit() prints the message and dies
 my $log = '';
 {

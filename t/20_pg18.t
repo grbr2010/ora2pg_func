@@ -30,7 +30,8 @@ ok($ok, "schema $sch") or diag($o);
 # Local tables the way ora2pg exports them: lower-cased and quoted (quote_object_name). Bodies must find them.
 ($ok, $o) = psql(qq{SET search_path = $sch; CREATE TABLE "товар" ("товар" bigint, "партия" bigint); CREATE TABLE "группа_товаров" ("группа" text, "название" text)});
 ok($ok, 'local tables as exported by ora2pg') or diag($o);
-for my $f ('t/expected/pkg_dblink/dblink_tables_package.sql', 't/expected/pkg_dblink/out.sql') {
+# order: tables, wrappers, then the code (views check the functions on creation)
+for my $f ('t/expected/pkg_dblink/dblink_tables_package.sql', 't/expected/pkg_dblink/dblink_functions_package.sql', 't/expected/pkg_dblink/out.sql') {
 	my $out = `grep -v ON_ERROR_STOP \Q$f\E | psql "\$PGTEST_DSN" -X -At -v ON_ERROR_STOP=0 -c "SET search_path = $sch, public" -f - 2>&1`;
 	my @bad = grep { /ERROR/ && !/does not exist/ } split /\n/, $out;
 	is(scalar @bad, 0, "no unexpected errors loading $f") or diag(join "\n", @bad);

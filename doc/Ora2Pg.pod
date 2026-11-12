@@ -2954,6 +2954,36 @@ C<LINK|KIND|PATH|SPEC>. Lines starting with # are ignored. KIND is COLUMN
 (SPEC: C<RETURN TYPE; arg IN|OUT|IN OUT TYPE, ...>) or PROCEDURE (arguments only).
 Entries in the file take precedence over the Oracle dictionary.
 
+An optional fifth field holds flags separated by commas. The only flag is
+C<MODIFIES>: the function writes data, so its wrapper calls it through
+oracle_exec() instead of oracle_scalar() (oracle_scalar() runs a query, and
+Oracle rejects a function with DML in a query with ORA-14551). An unknown flag
+gives a warning and the line is skipped. An argument may end with C<DEFAULT>
+(C<cd_2 IN NUMBER DEFAULT>): it may be omitted in the call.
+
+A call of a remote function with a known signature (a FUNCTION line or the
+dictionary) becomes a call of a typed PostgreSQL wrapper
+C<fdw_E<lt>serverE<gt>_E<lt>owner[_package]E<gt>.function(...)>; the wrappers are
+written to the file C<dblink_functions_E<lt>typeE<gt>.sql> and must be loaded
+after C<dblink_tables_E<lt>typeE<gt>.sql> and before the code. Only NUMBER, FLOAT,
+INTEGER, BINARY_INTEGER, PLS_INTEGER, VARCHAR2, CHAR, NVARCHAR2, NCHAR and DATE
+parameters and results are supported, and only IN parameters. Other calls
+(no signature, %TYPE or BOOLEAN parameter, missing required argument, mixed
+positional and named arguments) are translated to oracle_call() or oracle_exec()
+in the code, with a TODO marker.
+
+=item DBLINK_WRAPPER_DEFINER
+
+C<0> (default) or C<1>. With C<1> the wrappers of remote functions are created
+C<SECURITY DEFINER SET search_path = pg_catalog, DBLINK_EXT_SCHEMA>. Every
+wrapper is followed by C<REVOKE ALL ... FROM PUBLIC>; grant EXECUTE to the
+application roles yourself.
+
+=item DBLINK_EXT_SCHEMA
+
+Schema of the oracle_fdw extension, used in the C<search_path> of
+C<SECURITY DEFINER> wrappers. Default is C<public>.
+
 =item AUTONOMOUS_TRANSACTION
 
 Enable translation of autonomous transactions into wrapper functions

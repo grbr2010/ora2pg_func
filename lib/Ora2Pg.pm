@@ -921,6 +921,8 @@ sub _dblink_settings
 	$self->{dblink_exclude} ||= {};
 	$self->{dblink_schema_prefix} = 'fdw_' if (!defined $self->{dblink_schema_prefix});
 	$self->{dblink_signatures} ||= '';
+	$self->{dblink_wrapper_definer} = $self->{dblink_wrapper_definer} ? 1 : 0;
+	$self->{dblink_ext_schema} ||= 'public';
 }
 
 sub _init

@@ -24,8 +24,11 @@ my $out = -f "$dir/out.sql" ? slurp("$dir/out.sql") : '';
 my $tab = -f "$dir/dblink_tables_package.sql" ? slurp("$dir/dblink_tables_package.sql") : '';
 ok(length $out, 'out.sql produced');
 ok(length $tab, 'dblink_tables_package.sql produced');
+my $fun = -f "$dir/dblink_functions_package.sql" ? slurp("$dir/dblink_functions_package.sql") : '';
+ok(length $fun, 'dblink_functions_package.sql produced');
+like($out, qr/fdw_rdb1_rsch_rem_iface_pkg\.verify_state\(p_ref => p_ref\)/, 'typed wrapper call');
 
-like($out, qr/oracle_exec/, 'oracle_exec');
+like($out, qr/oracle_exec/, 'oracle_exec (procedures)');
 like($out, qr/oracle_call/, 'oracle_call');
 like($out, qr/oracle_scalar/, 'oracle_scalar');
 like($out, qr/fdw_rdb1_/, 'fdw_rdb1_ schema');
@@ -60,5 +63,6 @@ unlike($out, qr/END;\s*END;/, 'no duplicate END');
 my $exp = "t/expected/pkg_dblink";
 is(norm($out), norm(slurp("$exp/out.sql")), 'out.sql == expected');
 is(norm($tab), norm(slurp("$exp/dblink_tables_package.sql")), 'dblink_tables_package.sql == expected');
+is(norm($fun), norm(slurp("$exp/dblink_functions_package.sql")), 'dblink_functions_package.sql == expected');
 
 done_testing;

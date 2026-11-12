@@ -73,7 +73,7 @@ SKIP: {
 
 # 9. NUMBER without precision -> numeric
 ($out) = convert("BEGIN x := rsch.sw.rate\@rdb1(1) + 1; END;", dblink_signatures => "$Bin/fixtures/dblink_calls_sig.txt");
-($out) = convert("BEGIN x := 1 + sw.rate\@dbb_bak('a', sysdate, 1); END;", dblink_signatures => "$Bin/fixtures/dblink_calls_sig.txt");
+($out) = convert("BEGIN x := 1 + sw.rate\@dbb_bak('a', sysdate); END;", dblink_signatures => "$Bin/fixtures/dblink_calls_sig.txt");
 like(norm($out), qr/::numeric\b/, 'rate -> numeric');
 ($out) = convert("DECLARE v rsch.t.c\@rdb1%TYPE; BEGIN NULL; END;", dblink_signatures => "$Bin/fixtures/dblink_signatures.txt");
 unlike(norm($out), qr/numeric/, '%TYPE NUMBER(15) not numeric') if $out =~ /DECLARE/;
