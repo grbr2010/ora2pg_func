@@ -3,6 +3,7 @@ package Ora2Pg::DbLink;
 # Pure helpers to locate Oracle database-link references (ident.ident@link)
 # in PL/SQL text already masked by ora2pg (?TEXTVALUEn?, %ORA2PG_COMMENTn%).
 
+use utf8;
 use strict;
 use warnings;
 
@@ -603,9 +604,48 @@ sub _value_call
 	return $new;
 }
 
+# Writes to an excluded (MS SQL) link: the whole statement becomes a "--" comment
+# The text is hidden as an ordinary comment placeholder; a separate "NULL;" line is added after it so an
+# enclosing block never ends up empty (the original code is only commented, never replaced). Reads (SELECT, INSERT ... SELECT) are left alone.
+sub comment_writes
+{
+	my ($class, $str) = @_;
+	my $ex = $class->{dblink_exclude} or return $str;
+	return $str unless %$ex;
+	my $re = qr/(?:\A|;|\b(?:THEN|ELSE|BEGIN|LOOP|AS|IS)\b)\s*\K(?:UPDATE|DELETE(?:\s+FROM)?|INSERT\s+INTO|MERGE\s+INTO)\s+$PATH\@([\w\$#]+)/i;
+	my $from = 0;
+	while (substr($str, $from) =~ /$re/) {
+		my $link = uc $1;
+		my $start = $from + $-[0];
+		$from += $+[0];
+		next unless $ex->{$link};
+		# statement ends at the first ';' outside parentheses (text and comments are masked)
+		my ($depth, $end) = (0, length $str);
+		pos($str) = $from;
+		while ($str =~ /\G(?:$MASK|[^();]+|(\()|(\))|(;))/gc) {
+			if    ($1) { $depth++ }
+			elsif ($2) { $depth-- }
+			elsif ($3 && $depth <= 0) { $end = pos($str); last }
+		}
+		my $stmt = substr($str, $start, $end - $start);
+		1 while $stmt =~ s/\?TEXTVALUE(\d+)\?/$class->{text_values}{$1}/e
+			 || $stmt =~ s/(%ORA2PG_COMMENT\d+%)/$class->{comment_values}{$1}/e;
+		$stmt =~ s/^/-- /mg;
+		my $n = 0;
+		$n++ while exists $class->{comment_values}{"%ORA2PG_COMMENT9$n%"};
+		my $id = "%ORA2PG_COMMENT9$n%";
+		$class->{comment_values}{$id} = "-- TODO MS SQL-write: write path not selected\n$stmt";
+		my $new = "$id\nNULL;";
+		substr($str, $start, $end - $start) = $new;
+		$from = $start + length $new;
+	}
+	return $str;
+}
+
 sub rewrite
 {
 	my ($class, $str) = @_;
+	$str = comment_writes($class, $str);
 	for my $r (reverse scan_refs($str)) {
 		my $len  = $r->{end} - $r->{start};
 		my $orig = substr($str, $r->{start}, $len);

@@ -42,9 +42,11 @@ l_calc := nullif(split_part(_dbl_r1, chr(30), 2), chr(31));
 l_calc := nullif(split_part(_dbl_r1, chr(30), 3), chr(31));
 l_calc := nullif(split_part(_dbl_r1, chr(30), 4), chr(31));
 
-      UPDATE /* TODO dblink EXT1 */ EXTSCH.IMPORT_TBL@ext1 d
-         SET DIR_CONDITION = 0
-       WHERE d.id = new_item_id;
+-- TODO MS SQL-write: write path not selected
+--       UPDATE EXTSCH.IMPORT_TBL@ext1 d
+--          SET DIR_CONDITION = 0
+--        WHERE d.id = new_item_id;
+NULL;
 
       INSERT INTO fdw_rdb1_rsch.item_log(id, dt) VALUES (new_item_id, clock_timestamp());
    END;

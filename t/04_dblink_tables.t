@@ -41,7 +41,9 @@ like($out, qr/--l_sys_flag\s+rsch\.ext_params\.auto_flag\@rdb1%TYPE;/, 'commente
 
 # 6. EXCLUDE
 ($out) = convert(slurp("$Bin/fixtures/ddl/excluded_update.sql"), dblink_exclude => { EXT1 => 1 });
-like(norm($out), qr{/\* TODO dblink EXT1 \*/ EXTSCH\.IMPORT_TBL\@ext1 d}, 'EXCLUDE');
+like($out, qr/^-- +UPDATE EXTSCH\.IMPORT_TBL\@ext1 d/m, 'EXCLUDE: write is commented (T10)');
+($out) = convert("BEGIN SELECT a INTO b FROM extsch.t\@ext1; END;", dblink_exclude => { EXT1 => 1 });
+like(norm($out), qr{/\* TODO dblink EXT1 \*/ extsch\.t\@ext1}i, 'EXCLUDE: read keeps the TODO');
 
 # 7. mode off
 my $src = "BEGIN SELECT a INTO b FROM rsch.t\@rdb1; END;";
