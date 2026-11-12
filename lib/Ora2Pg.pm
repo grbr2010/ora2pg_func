@@ -1840,9 +1840,10 @@ sub _init
 	# defined the dblink connection to use in autonomous transaction
 	$self->set_pg_conn_details();
 
-	# Set stdout encoding to UTF8 to avoid "Wide character in print" warning
+	# Set stdio encoding to UTF8 to avoid "Wide character in print" warning
 	if ($^O !~ /MSWin32|dos/i) {
 		binmode(STDOUT, "encoding(UTF-8)");
+		binmode(STDERR, "encoding(UTF-8)");
 	}
 
 	# Mark that we are exporting data using oracle_fdw
