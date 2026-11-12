@@ -1,3 +1,4 @@
+use utf8;
 use strict;
 use warnings;
 use Test::More;
@@ -26,6 +27,9 @@ ok($ok, 'server erpdb') or diag($o);
 my $sch = $ENV{PGTEST_SCHEMA} || 'ora2pg_t_dblink';
 ($ok, $o) = psql("DROP SCHEMA IF EXISTS $sch CASCADE; CREATE SCHEMA $sch");
 ok($ok, "schema $sch") or diag($o);
+# Local tables the way ora2pg exports them: lower-cased and quoted (quote_object_name). Bodies must find them.
+($ok, $o) = psql(qq{SET search_path = $sch; CREATE TABLE "товар" ("товар" bigint, "партия" bigint); CREATE TABLE "группа_товаров" ("группа" text, "название" text)});
+ok($ok, 'local tables as exported by ora2pg') or diag($o);
 for my $f ('t/expected/pkg_dblink/dblink_tables_package.sql', 't/expected/pkg_dblink/out.sql') {
 	my $out = `grep -v ON_ERROR_STOP \Q$f\E | psql "\$PGTEST_DSN" -X -At -v ON_ERROR_STOP=0 -c "SET search_path = $sch, public" -f - 2>&1`;
 	my @bad = grep { /ERROR/ && !/does not exist/ } split /\n/, $out;
@@ -35,9 +39,11 @@ for my $f ('t/expected/pkg_dblink/dblink_tables_package.sql', 't/expected/pkg_db
 ($ok, $o) = psql(qq{SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='$sch'});
 cmp_ok($o, '>', 0, "functions created in schema $sch") or diag($o);
 
-($ok, $o) = psql(qq{SELECT p.oid::regprocedure || E'\t' || c.message FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace, LATERAL plpgsql_check_function_tb(p.oid::regprocedure, fatal_errors => false) c WHERE p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql') AND n.nspname='$sch' AND c.level='error'});
+($ok, $o) = psql(qq{SET search_path = $sch, public; SELECT p.oid::regprocedure || E'\t' || c.message FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace, LATERAL plpgsql_check_function_tb(p.oid::regprocedure, fatal_errors => false) c WHERE p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql') AND n.nspname='$sch' AND c.level='error'});
+utf8::decode($o);
 diag("plpgsql_check errors (missing local objects and TODO dblink expected):\n$o");
 ok($ok, 'plpgsql_check ran');
+unlike($o, qr/relation "(?:товар|ТОВАР|группа_товаров|ГРУППА_ТОВАРОВ)" does not exist/, 'Cyrillic table names in bodies match the exported tables');
 
 psql("DROP SCHEMA IF EXISTS $sch CASCADE");
 done_testing;

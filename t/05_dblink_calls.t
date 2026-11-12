@@ -18,7 +18,7 @@ like(norm($out), qr/\Q$exp\E/, 'named -> oracle_exec');
 
 # 2. cast from the signature / TODO without it
 my $src = slurp("$Bin/fixtures/ddl/cast_call.sql");
-my $call = q{oracle_call('erpdb', 'ERPS.ERP_RESERVE_PKG.CHECK_RESERVE_EXIST', (num_||'/'||z_cur.ТОВАР)::text)};
+my $call = q{oracle_call('erpdb', 'ERPS.ERP_RESERVE_PKG.CHECK_RESERVE_EXIST', (num_||'/'||z_cur.товар)::text)};
 ($out) = convert("BEGIN\n$src END;", dblink_signatures => $sig);
 like(norm($out), qr/\Q$call\E::(?:numeric|bigint|integer|double precision)/, 'cast by RETURN NUMBER');
 ($out) = convert("BEGIN\n$src END;");

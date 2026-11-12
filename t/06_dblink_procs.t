@@ -15,7 +15,7 @@ my ($out, $o);
 my $src = slurp("$Bin/fixtures/ddl/proc_budget.sql");
 ($out) = convert("DECLARE\n n int;\nBEGIN\n$src END;", dblink_signatures => $sig);
 $out = norm($out);
-like($out, qr/\Q_dbl_r1 := oracle_exec('erpdb', \E\$ora\$\QDECLARE o4 NUMBER; o5 NUMBER; o6 NUMBER; o7 NUMBER; BEGIN erps.ERP_BUDGET_PKG.Get_Budget_data(:p1, :p2, :p3, o4, o5, o6, o7); :p0 := NVL(TO_CHAR(o4), chr(31)) || chr(30) || NVL(TO_CHAR(o5), chr(31)) || chr(30) || NVL(TO_CHAR(o6), chr(31)) || chr(30) || NVL(TO_CHAR(o7), chr(31)); END;\E\$ora\$\Q, (p_per)::text, (p_erpdb_cfo)::text, (acc_c.ГРУППА)::text);\E/, 'budget: oracle_exec');
+like($out, qr/\Q_dbl_r1 := oracle_exec('erpdb', \E\$ora\$\QDECLARE o4 NUMBER; o5 NUMBER; o6 NUMBER; o7 NUMBER; BEGIN erps.ERP_BUDGET_PKG.Get_Budget_data(:p1, :p2, :p3, o4, o5, o6, o7); :p0 := NVL(TO_CHAR(o4), chr(31)) || chr(30) || NVL(TO_CHAR(o5), chr(31)) || chr(30) || NVL(TO_CHAR(o6), chr(31)) || chr(30) || NVL(TO_CHAR(o7), chr(31)); END;\E\$ora\$\Q, (p_per)::text, (p_erpdb_cfo)::text, (acc_c.группа)::text);\E/, 'budget: oracle_exec');
 like($out, qr/\Qp_avail := nullif(split_part(_dbl_r1, chr(30), 4), chr(31))\E/, 'budget: 4th');
 like($out, qr/\Qp_plan := nullif(split_part(_dbl_r1, chr(30), 1), chr(31));\E/, 'budget: 1st');
 like($out, qr/DECLARE\s*_dbl_r1 text;\s*n integer;/i, 'budget: declared');
@@ -27,7 +27,7 @@ $src = slurp("$Bin/fixtures/ddl/proc_out.sql");
 $out = norm($out);
 like($out, qr/\Q:p0 := NVL(TO_CHAR(o3), chr(31)) || chr(30) || NVL(TO_CHAR(o4), chr(31)) || chr(30) || NVL(o5, chr(31)); END;\E/, 'named: pack');
 like($out, qr/\QDECLARE o3 NUMBER; o4 NUMBER; o5 VARCHAR2(32767); BEGIN erps.erp_iface_pkg.get_item_attrs(p_cfo => :p1, p_statya => :p2, x_code_combination_id => o3, x_category_id => o4, X_ERR_MSG => o5, p_inv_type => :p3);\E/, 'named: block');
-like($out, qr/\Q(ОТДЕЛ_ERP)::text, (ГРУППА_ERP)::text, (item_kind)::text);\E/, 'named: binds');
+like($out, qr/\Q(отдел_erp)::text, (группа_erp)::text, (item_kind)::text);\E/, 'named: binds');
 like($out, qr/\QERR_MSG := nullif(split_part(_dbl_r1, chr(30), 3), chr(31))\E/, 'named: ERR_MSG');
 
 # 3. IN only: with / without signature

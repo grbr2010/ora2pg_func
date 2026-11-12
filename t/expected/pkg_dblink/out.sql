@@ -32,7 +32,7 @@ BEGIN
       l_request := oracle_call('erpdb', 'erps.erp_iface_pkg.request_id');
 
       -- rename groups from the remote dictionary
-      UPDATE ГРУППА_ТОВАРОВ st
+      UPDATE группа_товаров st
          SET st.название = (SELECT v.acc_name FROM fdw_erpdb_erps.erp_accounts v WHERE v.acc_code = to_char(st.группа) )
        WHERE st.группа IN (SELECT v.acc_code FROM fdw_erpdb_erps.erp_accounts v);
 
@@ -100,9 +100,9 @@ DECLARE
       res   bigint := NULL;
 
 BEGIN
-      SELECT MIN(op.ТОВАР)
+      SELECT MIN(op.товар)
         INTO STRICT res
-        FROM ТОВАР op, ТОВАР op2
+        FROM товар op, товар op2
        WHERE op.партия = op2.партия
          AND op2.товар = p_id;
 
