@@ -448,7 +448,13 @@ sub _pick_overload
 		push @cand, $ov;
 	}
 	return $cand[0] if @cand == 1;
-	_warn($class, "$L: overloaded routine $path_lbl is not supported") if @cand != 1;
+	if (@cand > 1) {
+		_warn($class, "$L: overloaded routine $path_lbl is not supported");
+	} elsif (!@cand) {
+		my $wf = defined $want_fn ? ($want_fn ? 'function' : 'procedure') : 'any';
+		my $ac = defined $argc ? $argc : '?';
+		_warn($class, "$L: overloaded routine $path_lbl: no overload matches hint (argc=$ac, want=$wf)");
+	}
 	return undef;
 }
 
@@ -521,9 +527,10 @@ sub meta
 sub _routine_hint
 {
 	my ($class, $r, $args, $assign) = @_;
+	my $want_fn = $assign ? 1 : ($r->{kind} eq 'call' || $r->{kind} eq 'expr' ? 1 : 0);
 	return {
 		argc           => scalar(@$args),
-		want_function  => $assign ? 1 : ($r->{kind} eq 'expr' ? 1 : 0),
+		want_function  => $want_fn,
 	};
 }
 

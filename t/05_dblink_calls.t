@@ -54,4 +54,12 @@ like(norm($out), qr/x := oracle_call\('rdb1', 'rsch\.pkg\.f'\);/, 'no args');
 ($out) = convert("BEGIN\n" . slurp("$Bin/fixtures/ddl/expr_call.sql") . "END;");
 like(norm($out), qr/l_ref_id := oracle_call\('rdb1', 'rsch\.rem_iface_pkg\.ref_id'\);/, 'expr -> oracle_call');
 
+# 8. SELECT INTO: call in SQL expression -> typed wrapper (GET_SUMM-style)
+($out) = convert(<<"PL", dblink_signatures => $sig);
+BEGIN
+  SELECT x + rsch.pkg.get_summ@rdb1(z) INTO x FROM dual;
+END;
+PL
+like(norm($out), qr/SELECT x \+ fdw_rdb1_rsch_pkg\.get_summ\(z\) INTO x FROM dual;/, 'SELECT INTO + call -> function wrapper');
+
 done_testing;

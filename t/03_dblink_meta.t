@@ -12,7 +12,7 @@ sub execute {
 	$self->{rows} = $rows;
 	return 1;
 }
-sub fetchall_arrayref { return $self->{rows} // [] }
+sub fetchall_arrayref { my ($self) = @_; return $self->{rows} // [] }
 sub err      { 0 }
 sub errstr   { '' }
 package Stub;
@@ -86,7 +86,7 @@ my %rows = (
 	},
 );
 my $d = Stub->new(\%rows);
-my $l = bless { dbh => $d }, 'Log';
+my $l = bless { dbh => $d, dblink_meta => { RDB1 => { _DEFAULT_OWNER => 'RSCH' } } }, 'Log';
 my $r = meta($l, 'RDB1', 'TABLE', 'syn_t');
 is($r->{name}, 'REAL_T', 'synonym resolved');
 is_deeply($r->{pk}, ['ID'], 'live pk');
@@ -101,7 +101,13 @@ is_deeply(meta($l, 'RDB1', 'ROUTINE', 'pkg.get_summ', { want_function => 0, argc
 		{ name => 'A', mode => 'IN', type => 'NUMBER' }, { name => 'B', mode => 'IN', type => 'NUMBER' },
 		{ name => 'C', mode => 'OUT', type => 'NUMBER' },
 	] }, 'overload: procedure by hint');
-like(join('', @{$l->{sql}}[-2]), qr/package_name,\s*'-'\)\s*=\s*'-'/i, 'remote dictionary uses literal binds');
+{
+	my $l2 = bless { dbh => $d }, 'Log';
+	is(meta($l2, 'RDB1', 'ROUTINE', 'pkg.get_summ', { want_function => 0, argc => 1 }), undef, 'hint mismatch -> undef');
+	like($l2->{log}[-1], qr/no overload matches hint.*argc=1.*want=procedure/, 'hint mismatch warning');
+}
+like(join('', @{$d->{sql}}), qr/owner = '[A-Z0-9_]+' AND NVL\(package_name, '-'\) = '-' AND object_name = '[A-Z0-9_]+'/i,
+	'remote dictionary uses literal binds');
 my $n = @{$d->{sql}};
 meta($l, 'RDB1', 'ROUTINE', 'ovl'); meta($l, 'RDB1', 'TABLE', 'syn_t'); meta($l, 'RDB1', 'TABLE', 'missing');
 my $n2 = @{$d->{sql}};
