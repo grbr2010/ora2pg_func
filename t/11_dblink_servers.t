@@ -34,7 +34,8 @@ $o->{dblink_server} = { DBB => 'custom' };
 is(server_for($o, 'DBB'), 'custom', 'DBLINK_SERVER wins');
 
 # live dictionary on demand; no query when the input is a file
-package Stub { sub new { bless { n => 0 }, shift } sub selectall_arrayref { $_[0]{n}++; return [['REMUSR', 'SRCDB']] } sub errstr { '' } }
+package Stub { sub new { bless { n => 0 }, shift } sub prepare { $_[0]{n}++; bless { }, 'Stub::Sth' } sub errstr { '' } }
+package Stub::Sth { sub execute { 1 } sub fetchall_arrayref { [['REMUSR', 'SRCDB']] } sub errstr { '' } }
 package main;
 my $dbh = Stub->new;
 my $l = bless { dbh => $dbh, dblink_server => {} }, 'Ora2Pg';

@@ -106,7 +106,7 @@ like(join('', @{$l->{log}}), qr/line 12: unknown flag 'NOSUCH', skipped/, 'unkno
 		$self->{rows} = $self->{dbh}->selectall_arrayref($self->{sql});
 		return 1;
 	}
-	sub fetchall_arrayref { return $self->{rows} }
+	sub fetchall_arrayref { return $_[0]{rows} }
 	sub err { 0 }
 	sub errstr { '' }
 	package DbhStub;

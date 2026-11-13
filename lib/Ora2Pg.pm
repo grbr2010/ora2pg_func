@@ -11501,6 +11501,11 @@ sub get_indexname
 	# Remove non alphanumeric character
 	#$idxname =~ s/[^a-z0-9_]+//ig;
 
+	# PostgreSQL keeps tables and indexes in one namespace: an index named like a table of the schema cannot be created
+	$self->{_table_names} ||= { map { (my $n = lc $_) =~ s/^.*\.//; $n =~ s/"//g; ($n => 1) } keys %{ $self->{tables} || {} } };
+	(my $plain_idx = lc "$idxname$self->{indexes_suffix}") =~ s/"//g;
+	$idxname .= '_idx' if $self->{_table_names}{$plain_idx};
+
 	$idxname = $self->quote_object_name("$idxname$self->{indexes_suffix}");
 
 	return $idxname;
@@ -15855,7 +15860,10 @@ sub _convert_function
 	{
 		if ($args_sorted[$i] =~ / DEFAULT ([^'].*)/i)
 		{
-			my $cod = Ora2Pg::PLSQL::convert_plsql_code($self, $1);
+			# the default is still masked as %%tmpN%% (parenthesis content): unmask it, or TRUNC(SYSDATE) is never converted
+			my $dflt = $1;
+			$dflt =~ s/\%\%tmp(\d+)\%\%/($param_param{$1})/gs;
+			my $cod = Ora2Pg::PLSQL::convert_plsql_code($self, $dflt);
 			$args_sorted[$i] =~ s/( DEFAULT )([^'].*)/$1$cod/i;
 		}
 	}
@@ -22392,6 +22400,8 @@ sub register_global_variable
 			{
 				# Append the rest of the definition to the default value
 				for (my $l = $j+1; $l <= $#others; $l++) {
+					# a variable declared in both package spec and body is registered twice: do not append to the first default
+					$self->{global_variables}{$v}{default} = '' if ($l == $j+1);
 					$self->{global_variables}{$v}{default} .= " " if ($l > $j+1);
 					$self->{global_variables}{$v}{default} .= $others[$l];
 				}

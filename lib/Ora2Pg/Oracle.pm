@@ -621,6 +621,7 @@ ORDER BY A.COLUMN_ID
 					&& !grep(/^$row->[8]$/i, @expanded_views)
 			);
 
+		$row->[4] =~ s/\0//g if defined $row->[4];	# DATA_DEFAULT is a LONG: strip the NUL terminator
 		$row->[2] = $row->[7] if $row->[1] =~ /char/i;
 		# Seems that for a NUMBER with a DATA_SCALE to 0, no DATA_PRECISION and a DATA_LENGTH of 22
 		# Oracle use a NUMBER(38) instead
@@ -1316,6 +1317,7 @@ ORDER BY ITER ASC, 2, 3
 		if (!$self->{schema} && $self->{export_schema}) {
 			$row->[0] = "$row->[2].$row->[0]";
 		}
+		$row->[1] =~ s/\0//g if defined $row->[1];	# LONG columns come back NUL-terminated; PostgreSQL rejects NUL
 		$data{$row->[0]}{text} = $row->[1];
 		$data{$row->[0]}{owner} = $row->[2];
 		$data{$row->[0]}{comment} = $comments{$row->[0]}{comment} || '';

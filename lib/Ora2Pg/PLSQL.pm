@@ -3656,6 +3656,10 @@ sub replace_outer_join
 		die "FATAL: outer join type must be 'left' or 'right' in call to replace_outer_join().\n";
 	}
 
+	# A comment glued to the end of a condition ("col(+) = 1 -- text") would be taken for a part of the
+	# constant below and moved with it: keep the comment placeholder a separate token.
+	$str =~ s/(\S)(\%ORA2PG_COMMENT\d+\%)/$1 $2/g;
+
 	# When we have a right outer join, just rewrite it as a left join to simplify the translation work
 	if ($type eq 'right') {
 		$str =~ s/(\s+)([^\s]+)\s*(\%OUTERJOIN\d+\%)\s*(!=|<>|>=|<=|=|>|<|NOT LIKE|LIKE)\s*([^\s]+)/$1$5 $4 $2$3/isg;
@@ -3687,6 +3691,10 @@ sub replace_outer_join
 			$table =~ s/\s+$//s;
 			my $cmt = '';
 			while ($table =~ s/(\s*\%ORA2PG_COMMENT\d+\%\s*)//is) {
+				$cmt .= $1;
+			}
+			# inline marker such as /* TODO dblink LINK */ before a table: keep it, do not take it for the table name
+			while ($table =~ s/(\s*\/\*.*?\*\/\s*)//s) {
 				$cmt .= $1;
 			}
 			my ($t, $alias, @others) = split(/\s+/, lc($table));
@@ -3854,6 +3862,8 @@ sub replace_outer_join
 		$str =~ s/\s*(AND\s+)?WHERE_CLAUSE\d+ / /igs;
 		$str =~ s/WHERE\s+(AND|OR)\s+/WHERE /is;
 		$str =~ s/WHERE[\s;]+$//i;
+		# nothing left but comments after WHERE
+		$str =~ s/\bWHERE((?:\s*\%ORA2PG_COMMENT\d+\%)+)[\s;]*$/$1/is;
 		$str =~ s/(\s+)WHERE\s+(ORDER|GROUP)\s+BY/$1$2 BY/is;
 		$str =~ s/\s+WHERE(\s+)/\nWHERE$1/igs;
 

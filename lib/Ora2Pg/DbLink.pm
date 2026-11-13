@@ -615,6 +615,9 @@ sub oracle_text
 	$str =~ s{(%ORA2PG_COMMENT\d+%)}{ my $c = $class->{comment_values}{$1} // ''; $c =~ m!^/\*\+! ? $c : ' ' }ge;
 	$str =~ s/%OUTERJOIN\d+%/(+)/g;
 	$str =~ s/\?TEXTVALUE(\d+)\?/$class->{text_values}{$1}/g;
+	# '' and \' were masked by _remove_text_constant_part; the caller's restore does not see this string
+	$str =~ s/ORA2PG_ESCAPE2_QUOTE/''/g;
+	$str =~ s/ORA2PG_ESCAPE1_QUOTE'/\\'/g;
 	return $str;
 }
 
@@ -625,6 +628,15 @@ sub _fdw_schema
 	my $s = lc(($class->{dblink_schema_prefix} // 'fdw_') . $server . (defined $owner ? "_$owner" : ''));
 	$s =~ s/[^a-z0-9_]/_/g;
 	return $s;
+}
+
+# column name for a foreign table: lower case, quoted when it is a reserved word (freeze, user, ...) or not a plain identifier
+sub _col_ident
+{
+	my ($name) = @_;
+	my $n = lc $name;
+	return $n if $n =~ /^[\w\$#]+$/ && $n !~ /^\d/ && !grep { $_ eq uc $n } @Ora2Pg::KEYWORDS, @Ora2Pg::SYSTEM_FIELDS;
+	return qq("$n");
 }
 
 sub _pg_type
@@ -911,9 +923,7 @@ sub foreign_tables_sql
 			}
 			my %pk = map { $_ => 1 } @{$m->{pk} || []};
 			my @cols = map {
-				my $n = lc $_->{name};
-				$n = qq("$n") unless $n =~ /^[\w\$#]+$/ && $n !~ /^\d/;
-				"\t$n " . _pg_type($class, $_) . ($pk{uc $_->{name}} ? " OPTIONS (key 'true')" : '');
+				"\t" . _col_ident($_->{name}) . ' ' . _pg_type($class, $_) . ($pk{uc $_->{name}} ? " OPTIONS (key 'true')" : '');
 			} @{$m->{columns}};
 			my $owner = $m->{owner} // (@p > 1 ? $p[0] : undef);
 			my $opts = (defined $owner ? "schema '" . uc($owner) . "', " : '') . "table '" . uc($m->{name} // $p[-1]) . "'";
@@ -1019,9 +1029,7 @@ sub view_ddl
 	my $cols = _view_columns($class, $view);
 	return (undef, "-- TODO dblink: view on one link, no column types\n") if !$cols || !@$cols;
 	my @c = map {
-		my $n = lc $_->{name};
-		$n = qq("$n") unless $n =~ /^[\w\$#]+$/ && $n !~ /^\d/;
-		"\t$n " . _pg_type($class, $_);
+		"\t" . _col_ident($_->{name}) . ' ' . _pg_type($class, $_);
 	} @$cols;
 	my $q = oracle_text($class, $m);
 	$q =~ s/[\s;]+$//;

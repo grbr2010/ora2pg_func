@@ -42,4 +42,57 @@ is($o->{dblink}{RDB1}{owner}, 'APP', 'CONNECT TO link: owner is the schema');
 is($o->{dblink}{RDB1}{host},  'SRCDB',    'CONNECT TO link: host parsed');
 is($o->{dblink}{OTHERDB}{owner}, 'APP', 'USING-only link: owner is the schema');
 
+# SYSDATE inside parentheses of a parameter default (TRUNC (SYSDATE)) must be converted too
+{
+	my $o = bless { type => 'PACKAGE', use_orafce => 1, plsql_pgsql => 1, text_values => {}, comment_values => {},
+			function_metadata => {}, preserve_case => 0, pg_supports_procedure => 1, pg_supports_outparam => 1,
+			package_as_schema => 0, data_type => { %Ora2Pg::Oracle::SQL_TYPE }, pg_integer_type => 1, pg_numeric_type => 1,
+			default_numeric => 'bigint' }, 'Ora2Pg';
+	my $f = "FUNCTION F1 (a IN NUMBER, d IN DATE DEFAULT TRUNC (SYSDATE), n IN NUMBER(10) DEFAULT NULL) RETURN VARCHAR2 IS\nBEGIN\n RETURN 'x';\nEND F1;\n";
+	my $out = $o->_convert_function('APP', $f, 'PKG');
+	unlike($out, qr/SYSDATE/i, 'SYSDATE in parameter default converted');
+	like($out, qr/DEFAULT TRUNC\(clock_timestamp\(\)\)/, 'default converted');
+	like($out, qr/n bigint DEFAULT NULL/, 'other parameter kept');
+}
+
+# a package variable registered twice (spec and body) keeps a single default
+{
+	my $o = bless { type => 'PACKAGE', use_orafce => 1, plsql_pgsql => 1, text_values => {}, comment_values => {},
+			function_metadata => {}, global_variables => {}, data_type => { %Ora2Pg::Oracle::SQL_TYPE } }, 'Ora2Pg';
+	for my $call (1, 2) {
+		my $decl = "VAL_ CONSTANT VARCHAR2(3) := 'RUR';";
+		$o->_remove_text_constant_part(\$decl);
+		$o->register_global_variable('pk', $decl);
+	}
+	is($o->{global_variables}{'pk.val_'}{default}, 'RUR', 'global variable default not doubled');
+}
+
+# an index named like a table gets a suffix (one relation namespace in PostgreSQL)
+{
+	my $o = bless { indexes_renaming => 0, indexes_suffix => '', tables => { 'APP.CURRENCY' => {}, 'APP.ORDERS' => {} },
+			preserve_case => 0, type => 'TABLE' }, 'Ora2Pg';
+	is($o->get_indexname('APP.ORDERS', 'APP.CURRENCY', 'CURRENCY'), 'currency_idx', 'index named like a table is renamed');
+	is($o->get_indexname('APP.ORDERS', 'APP.CURRENCY_FACT', 'X'), 'currency_fact', 'other index names untouched');
+}
+
+# outer join with a constant and a trailing comment: "col(+) = 1 -- text"
+{
+	use FindBin qw($Bin);
+	use lib "$Bin/lib";
+	require DblinkTest;
+	my ($out) = DblinkTest::convert("SELECT u.a FROM usr u, addr ad, terr tr WHERE ad.cd_u(+) = u.cd_u\n  AND ad.code_type(+) = 1   -- legal\n  AND tr.code(+) = ad.code",
+		type => 'VIEW', use_orafce => 1, idxcomment => 0, dblink_mode => 'off');
+	like($out, qr/ON \(u\.cd_u = ad\.cd_u AND 1 = ad\.code_type\)/, 'constant condition stays in ON');
+	unlike($out, qr/AND\s+=|\bWHERE\b/, 'no empty operand, no dangling WHERE');
+	like($out, qr/-- legal/, 'comment kept');
+}
+
+# a TODO marker before a table of the FROM list survives the outer join rewrite
+{
+	my ($out) = DblinkTest::convert('SELECT a.x FROM app.t a, s.u@ext1 b, c WHERE b.k(+) = a.k AND c.z(+) = a.z',
+		type => 'VIEW', use_orafce => 1, idxcomment => 0, dblink_exclude => { EXT1 => 1 });
+	like($out, qr{LEFT OUTER JOIN /\* TODO dblink EXT1 \*/ s\.u\@ext1 b ON \(a\.k = b\.k\)}, 'TODO marker kept with its table');
+	unlike($out, qr{/\* todo,}, 'marker not taken for a table name');
+}
+
 done_testing();

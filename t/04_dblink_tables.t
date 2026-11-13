@@ -65,4 +65,7 @@ isnt(norm($on), norm($off), 'on differs from off');
 	unlike($sql, qr/IMPORT FOREIGN/, 'no IMPORT FOREIGN SCHEMA');
 }
 
+# reserved words and odd names are quoted in foreign table columns
+is(Ora2Pg::DbLink::_col_ident($_->[0]), $_->[1], "column $_->[0]") for ([FREEZE => q("freeze")], [USER => q("user")], [Amount => "amount"], ["Weird Col" => q("weird col")], ["1ST" => q("1st")]);
+
 done_testing;

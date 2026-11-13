@@ -47,6 +47,11 @@ like($q, qr/sw\.doctype tp,sw\.doc d where/, 'tables without link');
 like($out, qr/^CREATE OR REPLACE VIEW app\.v_mix AS /, 'mixed: normal view');
 unlike($out, qr/FOREIGN TABLE/, 'mixed: no foreign table');
 
+# empty string literal '' in the remote query must not leak the ORA2PG_ESCAPE2_QUOTE placeholder
+($out) = export('APP.V_EMPTY', q{select decode(d.k, 1, '', d.nm || '; ') nm from sw.doc@dbb_bak d}, columns => [{ name => 'NM', type => 'VARCHAR2', length => 20 }]);
+unlike($out, qr/ORA2PG_ESCAPE/, 'no escape placeholder in foreign table query');
+like($out, qr/decode\(d\.k, 1, '', d\.nm/, "empty literal restored");
+
 # JOIN with local table, subquery with local table
 ($out) = export('APP.V_J', 'select 1 x from sw.doc@dbb_bak d join app.loc l on l.id = d.id', columns => [{ name => 'X', type => 'NUMBER' }]);
 unlike($out, qr/FOREIGN TABLE/, 'join with local: normal');
