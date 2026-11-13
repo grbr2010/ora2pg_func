@@ -228,11 +228,54 @@ sub _load_signatures
 	return $h;
 }
 
+sub _sql_one_line
+{
+	my ($sql) = @_;
+	$sql =~ s/\s+/ /g;
+	return length($sql) > 200 ? substr($sql, 0, 197) . '...' : $sql;
+}
+
+# sth first: DBD::Oracle keeps ORA-xxxxx here; $@ / dbh->errstr after a link failure is often only "Database disconnected".
+sub _db_err
+{
+	my ($dbh, $sth, $sql) = @_;
+	my $e = '';
+	$e = $sth->errstr if $sth && defined($sth->err) && $sth->err;
+	$e ||= $dbh->errstr if $dbh && defined($dbh->err) && $dbh->err;
+	$e ||= $DBI::errstr if defined $DBI::errstr && length $DBI::errstr;
+	$e ||= 'unknown error';
+	return $e . ' [' . _sql_one_line($sql) . ']';
+}
+
+sub _reconnect_oracle
+{
+	my ($class) = @_;
+	return unless $class->can('_db_connection');
+	eval { $class->{dbh}->disconnect() if $class->{dbh} };
+	$class->{dbh} = eval { $class->_db_connection() };
+}
+
 sub _q
 {
 	my ($class, $sql, @b) = @_;
-	my $rows = eval { $class->{dbh}->selectall_arrayref($sql, undef, @b) };
-	die(($@ || ($class->{dbh}->errstr // 'unknown error')) . "\n") unless $rows;
+	my $dbh = $class->{dbh} or die "no database connection\n";
+
+	my $run = sub {
+		local $dbh->{RaiseError} = 0;
+		local $dbh->{PrintError} = 0;
+		my $sth = $dbh->prepare($sql) or die _db_err($dbh, undef, $sql) . "\n";
+		$sth->execute(@b) or die _db_err($dbh, $sth, $sql) . "\n";
+		return $sth->fetchall_arrayref();
+	};
+
+	my $rows = eval { $run->() };
+	if ($@) {
+		my $err = $@;
+		$err =~ s/\s+$//;
+		my $alive = eval { $dbh->ping };
+		_reconnect_oracle($class) if !$alive;
+		die "$err\n";
+	}
 	return $rows;
 }
 
