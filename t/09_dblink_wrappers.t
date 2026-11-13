@@ -100,7 +100,17 @@ like(join('', @{$l->{log}}), qr/line 12: unknown flag 'NOSUCH', skipped/, 'unkno
 
 # live dictionary: DEFAULT from ALL_ARGUMENTS.DEFAULTED
 {
+	package DbhS;
+	sub execute {
+		my ($self) = @_;
+		$self->{rows} = $self->{dbh}->selectall_arrayref($self->{sql});
+		return 1;
+	}
+	sub fetchall_arrayref { return $self->{rows} }
+	sub err { 0 }
+	sub errstr { '' }
 	package DbhStub;
+	sub prepare { bless { dbh => $_[0], sql => $_[1] }, 'DbhS' }
 	sub selectall_arrayref { return [ [undef, 0, 'OUT', 'NUMBER', undef, undef], ['A', 1, 'IN', 'NUMBER', undef, 'N'], ['B', 2, 'IN', 'NUMBER', undef, 'Y'] ] }
 	sub errstr { 'stub' }
 }

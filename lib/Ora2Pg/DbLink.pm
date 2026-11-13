@@ -235,16 +235,81 @@ sub _sql_one_line
 	return length($sql) > 200 ? substr($sql, 0, 197) . '...' : $sql;
 }
 
-# sth first: DBD::Oracle keeps ORA-xxxxx here; $@ / dbh->errstr after a link failure is often only "Database disconnected".
+# Collect everything DBD::Oracle / DBI expose on a handle (sth before dbh).
+sub _h_err_parts
+{
+	my ($h) = @_;
+	return () unless $h && ref $h && $h->can('errstr');
+	my @p;
+	my $s = $h->errstr;
+	push @p, $s if defined $s && length $s;
+	if ($h->can('err')) {
+		my $c = $h->err;
+		push @p, "DBI err=$c" if defined $c && $c ne '';
+	}
+	if ($h->can('state')) {
+		my $st = $h->state;
+		push @p, "SQLSTATE=$st" if defined $st && length $st;
+	}
+	for my $k (qw(ora_errno ora_errstr)) {
+		my $v = eval { $h->{$k} };
+		push @p, "$k=$v" if defined $v && length "$v";
+	}
+	return @p;
+}
+
 sub _db_err
 {
-	my ($dbh, $sth, $sql) = @_;
-	my $e = '';
-	$e = $sth->errstr if $sth && defined($sth->err) && $sth->err;
-	$e ||= $dbh->errstr if $dbh && defined($dbh->err) && $dbh->err;
-	$e ||= $DBI::errstr if defined $DBI::errstr && length $DBI::errstr;
-	$e ||= 'unknown error';
-	return $e . ' [' . _sql_one_line($sql) . ']';
+	my ($dbh, $sth, $sql, $stage) = @_;
+	$stage //= 'query';
+	my %seen;
+	my @parts;
+	for my $h ($sth, $dbh) {
+		for my $p (_h_err_parts($h)) {
+			my $k = lc $p;
+			next if $seen{$k}++;
+			push @parts, $p;
+		}
+	}
+	if (defined $DBI::errstr && length $DBI::errstr && !$seen{lc $DBI::errstr}) {
+		push @parts, $DBI::errstr;
+	}
+	if (defined $DBI::err && $DBI::err ne '' && !$seen{"dbi err=$DBI::err"}) {
+		push @parts, "DBI err=$DBI::err";
+	}
+	if ($dbh && ref $dbh && $dbh->can('func')) {
+		for my $name (qw(ora_error OraError)) {
+			my $oci = eval { $dbh->func(undef, $name) };
+			next if $@ || !defined $oci;
+			my $t = ref($oci) eq 'ARRAY' ? join(' ', grep { defined && length } @$oci)
+				: (ref($oci) ? '' : "$oci");
+			next unless length $t;
+			next if $seen{lc $t}++;
+			push @parts, $t;
+			last;
+		}
+	}
+	my $e = @parts ? join('; ', @parts) : 'unknown error';
+	if ($e !~ /ORA-\d{5}/i) {
+		my $act = eval { $dbh->{Active} } if $dbh;
+		$act //= eval { defined $dbh->ping ? ($dbh->ping ? 'ping=1' : 'ping=0') : undef } if $dbh && $dbh->can('ping');
+		$e .= "; dbh_active=$act" if defined $act;
+	}
+	return "$e [$stage; " . _sql_one_line($sql) . ']';
+}
+
+# Dictionary binds are owner/package/name identifiers; inline them in remote SQL so DBD::Oracle
+# does not ship bind metadata across a database link (sqlplus-style literals, same as the probe).
+sub _sql_inline_dict_binds
+{
+	my ($sql, @b) = @_;
+	return ($sql, @b) unless $sql =~ /@/ && @b;
+	return ($sql, @b) if grep { !defined $_ || $_ !~ /^[\w\$#-]+$/i } @b;
+	for my $v (@b) {
+		my $lit = $v =~ /^-/i ? "'-'" : "'" . uc($v =~ s/'/''/gr) . "'";
+		$sql =~ s/\?/$lit/ or die "bind placeholder mismatch\n";
+	}
+	return ($sql);
 }
 
 sub _reconnect_oracle
@@ -252,31 +317,48 @@ sub _reconnect_oracle
 	my ($class) = @_;
 	return unless $class->can('_db_connection');
 	eval { $class->{dbh}->disconnect() if $class->{dbh} };
-	$class->{dbh} = eval { $class->_db_connection() };
+	my $dbh = eval { $class->_db_connection() };
+	if ($@ || !$dbh) {
+		my $why = $@ ? $@ : 'no handle';
+		$why =~ s/\s+$//;
+		_warn($class, "Oracle reconnect failed: $why");
+	}
+	$class->{dbh} = $dbh;
 }
 
 sub _q
 {
 	my ($class, $sql, @b) = @_;
 	my $dbh = $class->{dbh} or die "no database connection\n";
+	($sql, @b) = _sql_inline_dict_binds($sql, @b);
+	my $remote = $sql =~ /@/;
 
 	my $run = sub {
+		my $dbh = $class->{dbh} or die "no database connection\n";
 		local $dbh->{RaiseError} = 0;
 		local $dbh->{PrintError} = 0;
-		my $sth = $dbh->prepare($sql) or die _db_err($dbh, undef, $sql) . "\n";
-		$sth->execute(@b) or die _db_err($dbh, $sth, $sql) . "\n";
+		my $sth = $dbh->prepare($sql);
+		die _db_err($dbh, $sth, $sql, 'prepare') . "\n" if !$sth;
+		die _db_err($dbh, $sth, $sql, 'execute') . "\n" unless $sth->execute(@b);
 		return $sth->fetchall_arrayref();
 	};
 
-	my $rows = eval { $run->() };
-	if ($@) {
+	my @attempt_err;
+	for my $try (1 .. 2) {
+		my $rows = eval { $run->() };
+		return $rows unless $@;
 		my $err = $@;
 		$err =~ s/\s+$//;
-		my $alive = eval { $dbh->ping };
-		_reconnect_oracle($class) if !$alive;
-		die "$err\n";
+		push @attempt_err, "try $try: $err";
+		if ($try == 1 && $remote && $class->can('_db_connection')) {
+			_reconnect_oracle($class);
+			next;
+		}
+		_reconnect_oracle($class) if $remote && $class->can('_db_connection');
+		die join(' | ', @attempt_err) . "\n";
 	}
-	return $rows;
+	die join(' | ', @attempt_err) . "\n" if @attempt_err;
+	die "dictionary query failed\n";
 }
 
 sub _ident { my $s = shift; return $s =~ /^"(.*)"$/ ? $1 : uc $s; }
@@ -323,9 +405,56 @@ sub _live_table
 	return { owner => $owner, name => $name, columns => $cols, pk => [ map { $_->[0] } @$pk ] };
 }
 
+sub _rows_to_routine
+{
+	my ($rows) = @_;
+	return undef unless @$rows;
+	my %r = (type => 'PROCEDURE', return => undef, args => []);
+	for my $row (@$rows) {
+		my ($n, $pos, $io, $dt, undef, $defd) = @$row;
+		if ($pos == 0) { @r{qw(type return)} = ('FUNCTION', $dt); next; }
+		next unless defined $dt;	# procedure without arguments
+		push @{$r{args}}, { name => $n, mode => $io, type => $dt, (($defd // '') eq 'Y' ? (default => 1) : ()) };
+	}
+	return \%r;
+}
+
+sub _routine_arg_ok
+{
+	my ($sig, $argc) = @_;
+	return 1 unless defined $argc;
+	my @in = grep { ($_->{mode} // 'IN') =~ /^IN/ } @{$sig->{args} // []};
+	my $req = scalar grep { !$_->{default} } @in;
+	return 0 if $argc < $req || $argc > @in;
+	return 1;
+}
+
+# Picks one overload group from ALL_ARGUMENTS when several share object_name.
+sub _pick_overload
+{
+	my ($class, $L, $path_lbl, $by_ov, $hint) = @_;
+	my @ovs = sort { $a <=> $b } keys %$by_ov;
+	return $ovs[0] if @ovs <= 1;
+	$hint ||= {};
+	my $argc      = $hint->{argc};
+	my $want_fn   = $hint->{want_function};
+	my @cand;
+	for my $ov (@ovs) {
+		my $sig = _rows_to_routine($by_ov->{$ov});
+		next unless $sig;
+		next if defined $want_fn && $want_fn && $sig->{type} ne 'FUNCTION';
+		next if defined $want_fn && !$want_fn && $sig->{type} eq 'FUNCTION';
+		next unless _routine_arg_ok($sig, $argc);
+		push @cand, $ov;
+	}
+	return $cand[0] if @cand == 1;
+	_warn($class, "$L: overloaded routine $path_lbl is not supported") if @cand != 1;
+	return undef;
+}
+
 sub _live_routine
 {
-	my ($class, $L, @segs) = @_;
+	my ($class, $L, $hint, @segs) = @_;
 	my @try;
 	if (@segs == 3) {
 		@try = ([ @segs ]);
@@ -341,26 +470,25 @@ sub _live_routine
 	for my $t (@try) {
 		my $rows = _q($class, "SELECT argument_name, position, in_out, data_type, overload, defaulted FROM all_arguments\@$L WHERE owner = ? AND NVL(package_name, '-') = ? AND object_name = ? AND data_level = 0 ORDER BY overload, position", @$t);
 		next unless @$rows;
-		my %ov = map { $_->[4] => 1 } grep { defined $_->[4] } @$rows;
-		if (keys %ov > 1) { _warn($class, "$L: overloaded routine " . join('.', @$t) . " is not supported"); return undef; }
-		my %r = (type => 'PROCEDURE', return => undef, args => []);
-		for my $r (@$rows) {
-			my ($n, $pos, $io, $dt, undef, $defd) = @$r;
-			if ($pos == 0) { @r{qw(type return)} = ('FUNCTION', $dt); next; }
-			next unless defined $dt;	# procedure without arguments
-			push @{$r{args}}, { name => $n, mode => $io, type => $dt, (($defd // '') eq 'Y' ? (default => 1) : ()) };
+		my %by_ov;
+		for my $row (@$rows) {
+			my $ov = defined $row->[4] ? $row->[4] : 0;
+			push @{$by_ov{$ov}}, $row;
 		}
-		return \%r;
+		my $path_lbl = join('.', @$t);
+		my $ov = _pick_overload($class, $L, $path_lbl, \%by_ov, $hint);
+		next unless defined $ov;
+		return _rows_to_routine($by_ov{$ov});
 	}
 	return undef;
 }
 
 sub _live
 {
-	my ($class, $L, $kind, $path) = @_;
+	my ($class, $L, $kind, $path, $hint) = @_;
 	my @s = map { _ident($_) } $path =~ /("[^"]*"|[^.]+)/g;
 	return undef unless @s;
-	if ($kind eq 'ROUTINE') { return @s > 3 ? undef : _live_routine($class, $L, @s); }
+	if ($kind eq 'ROUTINE') { return @s > 3 ? undef : _live_routine($class, $L, $hint, @s); }
 	my $col = $kind eq 'COLUMN' ? pop @s : undef;
 	return undef if !@s || @s > 2;
 	my $t = _live_table($class, $L, @s) or return undef;
@@ -371,21 +499,32 @@ sub _live
 
 sub meta
 {
-	my ($class, $link, $kind, $path) = @_;
+	my ($class, $link, $kind, $path, $hint) = @_;
 	$kind = uc $kind;
 	my $c = $class->{dblink_meta}{$link}{$kind} ||= {};
-	my $k = lc $path;
+	my $hk = ($kind eq 'ROUTINE' && ref($hint) eq 'HASH')
+		? '|' . join(',', map { $_ // '' } @$hint{qw(argc want_function)}) : '';
+	my $k = lc($path) . $hk;
 	return $c->{$k} if exists $c->{$k};
 	my $sig = $class->{dblink_sigfile_cache} || _load_signatures($class);
 	# links mapped to one server (DBLINK_SERVER) share their signatures
-	my $r = $sig->{"$link|$kind|$k"} // $sig->{uc(server_for($class, $link)) . "|$kind|$k"};
+	my $r = $sig->{"$link|$kind|" . lc($path)} // $sig->{uc(server_for($class, $link)) . "|$kind|" . lc($path)};
 	if (!$r && $class->{dbh} && !$class->{input_file}) {
 		if ($link =~ /^[A-Z0-9_\$#]+(\.[A-Z0-9_\$#]+)*(\@[A-Z0-9_\$#]+)?$/) {
-			$r = eval { _live($class, $link, $kind, $path) };
+			$r = eval { _live($class, $link, $kind, $path, $hint) };
 			_warn($class, "$link $kind $path: dictionary query failed: " . ($@ =~ s/\s+$//r)) if $@;
 		} else { _warn($class, "invalid database link name '$link'"); }
 	}
 	return $c->{$k} = $r;
+}
+
+sub _routine_hint
+{
+	my ($class, $r, $args, $assign) = @_;
+	return {
+		argc           => scalar(@$args),
+		want_function  => $assign ? 1 : ($r->{kind} eq 'expr' ? 1 : 0),
+	};
 }
 
 # ---- rewrite: references to @link -> oracle_fdw constructs ----
@@ -505,7 +644,7 @@ sub _stmt_call
 	my ($link, $path) = @$r{qw(link path)};
 	$r->{_end} = $end;
 	my $todo = sub { return "/* TODO dblink $link: $_[0] */ " . substr($$sref, $r->{start}, $end - $r->{start}); };
-	my $sig = meta($class, $link, 'ROUTINE', $path);
+	my $sig = meta($class, $link, 'ROUTINE', $path, { argc => scalar(@$args), want_function => 0 });
 	return $todo->("no signature for $path") if !$sig && grep { _simple_var($_->{expr}) } @$args;
 	my ($i, $k, @call, @bind, @dec, @pack, @outs) = (0, 0);
 	for my $a (@$args) {
@@ -640,7 +779,7 @@ sub _value_call
 	return undef if $r->{kind} eq 'expr' && !$assign;
 	return _stmt_call($class, $sref, $r, \@args, $end)
 		if $r->{kind} eq 'call' && $after =~ /^;/ && ($before eq '' || $before =~ /(?:;|\b(?:BEGIN|THEN|ELSE|LOOP|DECLARE))$/i);
-	my $sig = meta($class, $link, 'ROUTINE', $path);
+	my $sig = meta($class, $link, 'ROUTINE', $path, _routine_hint($class, $r, \@args, $assign));
 	if (my $w = _wrapper($class, $link, $path, $sig, \@args)) { $r->{_end} = $end; return $w; }
 	my $i = 0;
 	for my $a (@args) {
