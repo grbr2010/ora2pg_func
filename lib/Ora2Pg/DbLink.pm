@@ -288,11 +288,27 @@ sub _table_cols
 	return [ map { { name => $_->[0], type => $_->[1], len => $_->[2], precision => $_->[3], scale => $_->[4], nullable => $_->[5] } } @$rows ];
 }
 
+# Default owner for path without schema prefix: CONNECT TO user from the link definition (not USER@link).
+sub _default_owner
+{
+	my ($class, $L) = @_;
+	return $class->{dblink_meta}{$L}{'_DEFAULT_OWNER'}
+		if exists $class->{dblink_meta}{$L}{'_DEFAULT_OWNER'};
+	my $d = _link_def($class, $L);
+	my $u = ($d && defined $d->{user} && $d->{user} ne '') ? uc($d->{user}) : undef;
+	$class->{dblink_meta}{$L}{'_DEFAULT_OWNER'} = $u if defined $u;
+	return $u;
+}
+
 # segs: (name) or (owner, name); returns TABLE hashref or undef
 sub _live_table
 {
 	my ($class, $L, @segs) = @_;
-	my ($owner, $name) = @segs > 1 ? @segs : (_schema($class, $L), @segs);
+	my ($owner, $name) = @segs > 1 ? @segs : do {
+		my $o = _default_owner($class, $L);
+		return undef unless defined $o;
+		($o, $segs[0]);
+	};
 	my $cols = _table_cols($class, $L, $owner, $name);
 	unless (@$cols) {
 		my $syn = _q($class, "SELECT table_owner, table_name, db_link, owner FROM all_synonyms\@$L WHERE owner IN (?, 'PUBLIC') AND synonym_name = ?", $owner, $name);
@@ -307,18 +323,21 @@ sub _live_table
 	return { owner => $owner, name => $name, columns => $cols, pk => [ map { $_->[0] } @$pk ] };
 }
 
-sub _schema
-{
-	my ($class, $L) = @_;
-	return $class->{dblink_meta}{$L}{'_SCHEMA'} //= _q($class, "SELECT USER FROM DUAL\@$L")->[0][0];
-}
-
 sub _live_routine
 {
 	my ($class, $L, @segs) = @_;
-	my @try = @segs == 3 ? ([ @segs ])
-		: @segs == 2 ? ([ $segs[0], '-', $segs[1] ], [ _schema($class, $L), @segs ])
-		: ([ _schema($class, $L), '-', $segs[0] ]);
+	my @try;
+	if (@segs == 3) {
+		@try = ([ @segs ]);
+	} elsif (@segs == 2) {
+		@try = ([ $segs[0], '-', $segs[1] ]);
+	} elsif (@segs == 1) {
+		my $o = _default_owner($class, $L);
+		return undef unless defined $o;
+		@try = ([ $o, '-', $segs[0] ]);
+	} else {
+		return undef;
+	}
 	for my $t (@try) {
 		my $rows = _q($class, "SELECT argument_name, position, in_out, data_type, overload, defaulted FROM all_arguments\@$L WHERE owner = ? AND NVL(package_name, '-') = ? AND object_name = ? AND data_level = 0 ORDER BY overload, position", @$t);
 		next unless @$rows;
