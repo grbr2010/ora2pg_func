@@ -317,6 +317,10 @@ sub spawn
 	# the child -- go spawn
 	$< = $>;
 	$( = $); # suid progs only
+	if ($^O !~ /MSWin32|dos/i) {
+		binmode(STDOUT, ":encoding(UTF-8)");
+		binmode(STDERR, ":encoding(UTF-8)");
+	}
 	exit &$coderef();
 }
 
@@ -589,6 +593,7 @@ sub append_export_file
 		} else {
 			$filehdl = new IO::File;
 			$filehdl->open(">>$outfile") or $self->logit("FATAL: Can't open $outfile: $!\n", 0, 1);
+			$self->set_binmode($filehdl);
 			$filehdl->autoflush(1);
 		}
 	}
