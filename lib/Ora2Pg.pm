@@ -5150,6 +5150,8 @@ sub export_view
 		# view with all sources on one database link: foreign table on the query (name filled in below)
 		my ($fdw_ddl, $fdw_todo) = Ora2Pg::DbLink::view_ddl($self, $view, '%FDW_NAME%', $self->{views}{$view}{text});
 		$self->{views}{$view}{text} = $self->_format_view($view, $self->{views}{$view}{text}) if (!defined $fdw_ddl);
+		# pack.func() -> pack_func(): the package function list is read from the dictionary for VIEW export
+		$self->requalify_function_call(\$self->{views}{$view}{text}) if (!defined $fdw_ddl);
 		my $tmpv = $view;
 		if (exists $self->{replaced_tables}{"\L$tmpv\E"} && $self->{replaced_tables}{"\L$tmpv\E"})
 		{
@@ -15794,6 +15796,11 @@ sub _convert_function
 	$fct_detail{args} =~ s/\s+IN\s+/ /igs;
 	# Remove %ROWTYPE from arguments, we can use the table name as type
 	$fct_detail{args} =~ s/\%ROWTYPE//igs;
+	# PG folds only ASCII in unquoted names: lowercase Cyrillic in tbl.col%TYPE like the created objects
+	unless ($self->{preserve_case}) {
+		$fct_detail{args} = Ora2Pg::PLSQL::lc_type_refs($fct_detail{args});
+		$fct_detail{func_ret_type} = Ora2Pg::PLSQL::lc_type_refs($fct_detail{func_ret_type}) if defined $fct_detail{func_ret_type};
+	}
 
 	# Replace DEFAULT EMPTY_BLOB() from function/procedure arguments by DEFAULT NULL
 	$fct_detail{args} =~ s/\s+DEFAULT\s+EMPTY_[CB]LOB\(\)/DEFAULT NULL/igs;

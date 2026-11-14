@@ -1,3 +1,4 @@
+use utf8;
 use strict;
 use warnings;
 use Test::More;
@@ -93,6 +94,37 @@ is($o->{dblink}{OTHERDB}{owner}, 'APP', 'USING-only link: owner is the schema');
 		type => 'VIEW', use_orafce => 1, idxcomment => 0, dblink_exclude => { EXT1 => 1 });
 	like($out, qr{LEFT OUTER JOIN /\* TODO dblink EXT1 \*/ s\.u\@ext1 b ON \(a\.k = b\.k\)}, 'TODO marker kept with its table');
 	unlike($out, qr{/\* todo,}, 'marker not taken for a table name');
+}
+
+# Cyrillic tbl.col%TYPE is lowercased (PG folds only ASCII), in code and in arguments
+{
+	my ($out) = DblinkTest::convert("DECLARE v Payment.Заявка.Валюта_Фикс%TYPE; w ЗАЯВКА.ЗАЯВКА%TYPE; BEGIN NULL; END;", type => 'FUNCTION', use_orafce => 1, idxcomment => 0);
+	like($out, qr/v payment\.заявка\.валюта_фикс%TYPE/, 'schema.table.col%TYPE lowercased');
+	like($out, qr/w заявка\.заявка%TYPE/, 'table.col%TYPE lowercased');
+	is(Ora2Pg::PLSQL::lc_type_refs('( z Payment.Заявка.Заявка%TYPE, s int)'), '( z payment.заявка.заявка%TYPE, s int)', 'arguments');
+}
+
+# pack.func() in a view is rewritten to the flat function name
+{
+	my $o = bless { package_functions => { 'pack_бюджет' => { val => { name => 'pack_бюджет_val', package => 'pack_бюджет' } } } }, 'Ora2Pg';
+	my $v = 'SELECT Rate2(d, c, pack_бюджет.VAL()) x FROM t';
+	$o->requalify_function_call(\$v);
+	is($v, 'SELECT Rate2(d, c, pack_бюджет_val()) x FROM t', 'package call in view');
+}
+
+# schema-qualified FROM table referenced without schema in (+) conditions is not duplicated
+{
+	my ($out) = DblinkTest::convert("select s.a from app.zz, app.op, app.st\n where zz.z = op.z and op.s(+) = st.a", type => 'VIEW', use_orafce => 1, idxcomment => 0, dblink_mode => 'off');
+	is(scalar(() = $out =~ /\bapp\.st\b/g), 1, 'table listed once');
+	is(scalar(() = $out =~ /\bapp\.op\b/g), 1, 'outer joined table listed once');
+}
+
+# (+) conditions written as schema.table.col
+{
+	for my $w ('app.op.s(+) = app.st.a', 'app.op.s(+) = st.a', 'op.s(+) = app.st.a') {
+		my ($out) = DblinkTest::convert("select 1 from app.zz, app.op, app.st\n where zz.z = op.z and $w", type => 'VIEW', use_orafce => 1, idxcomment => 0, dblink_mode => 'off');
+		like($out, qr/FROM app\.zz zz, app\.st st\nLEFT OUTER JOIN app\.op op ON \(st\.a = op\.s\)\nWHERE zz\.z = op\.z/, "no duplicates: $w");
+	}
 }
 
 done_testing();
