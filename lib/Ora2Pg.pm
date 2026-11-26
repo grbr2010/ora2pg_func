@@ -11626,7 +11626,8 @@ sub get_indexname
 	# Remove non alphanumeric character
 	#$idxname =~ s/[^a-z0-9_]+//ig;
 
-	# PostgreSQL keeps tables and indexes in one namespace: an index named like a table of the schema cannot be created
+	# PostgreSQL keeps tables and indexes in the same namespace: an index named like a
+	# table of the schema cannot be created
 	$self->{_table_names} ||= { map { (my $n = lc $_) =~ s/^.*\.//; $n =~ s/"//g; ($n => 1) } keys %{ $self->{tables} || {} } };
 	(my $plain_idx = lc "$idxname$self->{indexes_suffix}") =~ s/"//g;
 	$idxname .= '_idx' if $self->{_table_names}{$plain_idx};
@@ -15919,7 +15920,6 @@ sub _convert_function
 	$fct_detail{args} =~ s/\s+IN\s+/ /igs;
 	# Remove %ROWTYPE from arguments, we can use the table name as type
 	$fct_detail{args} =~ s/\%ROWTYPE//igs;
-	# PG folds only ASCII in unquoted names: lowercase Cyrillic in tbl.col%TYPE like the created objects
 	unless ($self->{preserve_case}) {
 		$fct_detail{args} = Ora2Pg::PLSQL::lc_type_refs($fct_detail{args});
 		$fct_detail{func_ret_type} = Ora2Pg::PLSQL::lc_type_refs($fct_detail{func_ret_type}) if defined $fct_detail{func_ret_type};
@@ -15990,7 +15990,8 @@ sub _convert_function
 	{
 		if ($args_sorted[$i] =~ / DEFAULT ([^'].*)/i)
 		{
-			# the default is still masked as %%tmpN%% (parenthesis content): unmask it, or TRUNC(SYSDATE) is never converted
+			# the default is still masked as %%tmpN%% (content of parenthesis): unmask it
+			# first, or TRUNC(SYSDATE) is never converted
 			my $dflt = $1;
 			$dflt =~ s/\%\%tmp(\d+)\%\%/($param_param{$1})/gs;
 			my $cod = Ora2Pg::PLSQL::convert_plsql_code($self, $dflt);
@@ -22541,7 +22542,7 @@ sub register_global_variable
 			{
 				# Append the rest of the definition to the default value
 				for (my $l = $j+1; $l <= $#others; $l++) {
-					# a variable declared in both package spec and body is registered twice: do not append to the first default
+					# a variable declared in both the package spec and body is registered twice
 					$self->{global_variables}{$v}{default} = '' if ($l == $j+1);
 					$self->{global_variables}{$v}{default} .= " " if ($l > $j+1);
 					$self->{global_variables}{$v}{default} .= $others[$l];

@@ -486,19 +486,21 @@ sub dblink_server_name
 	return ($name =~ /^[a-z_][a-z0-9_\$]*$/) ? $name : '"' . $name . '"';
 }
 
-=head2 convert_plsql_code
-
-Main function used to convert Oracle SQL and PL/SQL code into PostgreSQL
-compatible code
-
-=cut
-
+# PostgreSQL folds only ASCII letters of unquoted identifiers: lower case
+# the table/column part of tbl.col%TYPE like the created objects.
 sub lc_type_refs
 {
 	my $str = shift;
 	$str =~ s/([\w\$#"]+(?:\.[\w\$#"]+)*)(\s*\%TYPE\b)/lc($1) . $2/gie;
 	return $str;
 }
+
+=head2 convert_plsql_code
+
+Main function used to convert Oracle SQL and PL/SQL code into PostgreSQL
+compatible code
+
+=cut
 
 sub convert_plsql_code
 {
@@ -1122,12 +1124,39 @@ sub plsql_to_plpgsql
 	# TO_CLOB(), we just remove it
 	$str =~ s/TO_CLOB\s*\(/\(/igs;
 
+	if ($class->{use_orafce}) {
+		# Parameterless orafce functions need the parentheses in PL/pgSQL (dbms_utility.format_call_stack
+		# is parsed as a column reference otherwise)
+		$str =~ s/\b(DBMS_UTILITY\.(?:FORMAT_CALL_STACK|GET_TIME)|DBMS_RANDOM\.(?:RANDOM|NORMAL|VALUE))\b(?!\s*[\(\.\w\$#])/$1()/igs;
+		# orafce has dbms_output.put_line(text) only, while Oracle accepts a number or a date: cast the
+		# argument unless it is a literal or a concatenation, which are already text
+		$str =~ s{(DBMS_OUTPUT\.PUT(?:_LINE)?\s*)(\((?:[^()]++|(?2))*\))}{
+			my ($pre, $args) = ($1, $2);
+			my $inner = substr($args, 1, -1);
+			my $top = $inner;
+			1 while ($top =~ s/\([^()]*\)//g);    # keep the top level only
+			($inner =~ /^\s*\?TEXTVALUE\d+\?\s*$/ || $inner =~ /^\s*$/ || $top =~ m{\|\|} || $inner =~ /::text\s*$/i)
+				? "$pre$args" : "$pre(($inner)::text)";
+		}iegs;
+	}
+
 	# Raise information to the client
 	if (!$class->{use_orafce}) {
 		$str =~ s/DBMS_OUTPUT\.(put_line|put|new_line)\s*\((.*?)\)\s*;/&raise_output($class, $2) . ';'/isge;
 	} else {
 		$str =~ s/(DBMS_OUTPUT\.)/PERFORM $1/igs;
-		$str = orafce_calls($class, $str);
+
+		# The procedures of the other orafce packages need PERFORM when they are a statement, as a
+		# function call cannot be one in PL/pgSQL. Functions (send_message, receive_message, fopen, ...)
+		# are used inside expressions and are left as they are.
+		my $stmt = qr{(?:^|;|\*/|\bTHEN\b|\bELSE\b|\bBEGIN\b|\bLOOP\b)\s*}i;
+		my $proc = qr{(?:DBMS_PIPE\.(?:PACK_MESSAGE(?:_RAW|_ROWID)?|RESET_BUFFER|PURGE)
+			|DBMS_ALERT\.(?:REGISTER|REMOVE|REMOVEALL|SET_DEFAULTS|SIGNAL)
+			|UTL_FILE\.(?:FCLOSE|FCLOSE_ALL|FFLUSH|PUT|PUT_LINE|PUTF|NEW_LINE|FREMOVE|FRENAME|FCOPY)
+			|DBMS_RANDOM\.(?:INITIALIZE|SEED|TERMINATE))}xi;
+		# Oracle's unpack_message(OUT var) is overloaded on the type of var; orafce has one function per type
+		$str =~ s/($stmt)DBMS_PIPE\.UNPACK_MESSAGE\s*\(\s*([^,\(\)]+?)\s*\)\s*;/$1$2 := dbms_pipe.unpack_message_text(); \/* TODO orafce: pick unpack_message_text\/_date\/_timestamp\/_number\/_bytea by the type of $2 *\//igms;
+		$str =~ s/($stmt)($proc\s*\()/$1PERFORM $2/igm;
 	}
 
 	# DBMS_LOCK.SLEEP can be replaced by pg_sleep
@@ -2054,10 +2083,16 @@ sub replace_oracle_function
 	$str =~ s/TO_DATE\s*\(\s*(.*)\s*,\s*(\?TEXTVALUE\d+\?)[^\)]*\)/to_date($1,$2)/igs;
 	$str =~ s/TO_DATE\s*\(\s*(.*)\s*,\s*(\?TEXTVALUE\d+\?)\s*,\s*(\?TEXTVALUE\d+\?)[^\)]*\)/to_date($1,$2)/igs;
 
+	# PostgreSQL and orafce have no RR/RRRR format fields (convert_date_format is not used with orafce)
+	$str = fix_rr_date_format($class, $str) if ($class->{use_orafce});
+
 	# When the date format is ISO and we have a constant we can remove the call to to_date()
 	if ($class->{type} eq 'PARTITION' && $class->{pg_supports_partition}) {
 		$str =~ s/to_date\(\s*('\s*\d+-\d+-\d+ \d+:\d+:\d+')\s*,\s*'[S]*YYYY-MM-DD HH24:MI:SS'[^\)]*\)/$1/igs;
 	}
+
+	# With orafce, to_date() with a time part must be oracle.to_date() (see fix_to_date_time)
+	$str = fix_to_date_time($class, $str) if ($class->{use_orafce});
 
 	# Translate to_timestamp_tz Oracle function
 	$str =~ s/TO_TIMESTAMP(?:_TZ)?\s*\((.*)\)/'to_timestamp(' . convert_date_format($class, $1, @strings) . ')'/iegs;
@@ -2071,11 +2106,6 @@ sub replace_oracle_function
 
 	# Oracle TO_CHAR(..., fmt, 'nls_date_language=...') — PG/orafce have no 3-arg form
 	$str = strip_to_char_nls_param($class, $str);
-	if ($class->{use_orafce}) {
-		$str = fix_rr_date_format($class, $str);
-		$str = fix_to_date_time($class, $str);
-	}
-
 	# Do some transformation when Orafce is not used
 	if (!$class->{use_orafce})
 	{
@@ -2430,30 +2460,39 @@ sub replace_decode
 	return $str;
 }
 
-# Calls into the orafce packages that need a rewrite to work in PL/pgSQL (USE_ORAFCE 1).
-sub orafce_calls
+# PostgreSQL and orafce do not know the RR/RRRR format fields: to_char() prints them literally and to_date()
+# misparses the year. Replace RRRR by YYYY and RR by YY in the format of TO_CHAR/TO_DATE/TO_TIMESTAMP(_TZ).
+# With TO_DATE the century window differs: PostgreSQL YY maps 70-99 to 19xx and 00-69 to 20xx.
+sub fix_rr_date_format
 {
 	my ($class, $str) = @_;
 
-	# Parameterless functions: PL/pgSQL does not accept dbms_utility.format_call_stack without ()
-	$str =~ s/\b(DBMS_UTILITY\.(?:FORMAT_CALL_STACK|GET_TIME)|DBMS_RANDOM\.(?:RANDOM|NORMAL|VALUE))\b(?!\s*[\(\.\w\$#])/$1()/igs;
+	my $rr = sub { my $f = shift; $f =~ s/(?<![A-Za-z])RRRR(?![A-Za-z])/YYYY/ig; $f =~ s/(?<![A-Za-z])RR(?![A-Za-z])/YY/ig; return $f; };
+	$str =~ s{\bTO_(?:CHAR|DATE|TIMESTAMP(?:_TZ)?)\s*\((?:[^(),]|\((?:[^()]|\([^()]*\))*\))*,\s*(?:\?TEXTVALUE(\d+)\?|('[^']*'))}{
+		my ($all, $n) = ($&, $1);
+		if (defined $n) {
+			$class->{text_values}{$n} = $rr->($class->{text_values}{$n}) if (defined $class->{text_values}{$n});
+		} else {
+			$all =~ s/('[^']*')$/$rr->($1)/e;
+		}
+		$all;
+	}iegs;
 
-	# Statement-level calls of orafce procedures need PERFORM. Functions (send_message, receive_message,
-	# create_pipe, remove_pipe, fopen, ...) are used inside expressions and keep their form.
-	my $stmt = qr{(?:^|[;]|\*/|\bTHEN\b|\bELSE\b|\bBEGIN\b|\bLOOP\b)\s*}i;
-	my $proc = qr/(?:DBMS_PIPE\.(?:PACK_MESSAGE(?:_RAW|_ROWID)?|RESET_BUFFER|PURGE)|DBMS_ALERT\.(?:REGISTER|REMOVE|REMOVEALL|SET_DEFAULTS|SIGNAL)|UTL_FILE\.(?:FCLOSE|FCLOSE_ALL|FFLUSH|PUT|PUT_LINE|PUTF|NEW_LINE|FREMOVE|FRENAME|FCOPY)|DBMS_RANDOM\.(?:INITIALIZE|SEED|TERMINATE))/i;
-	# Oracle's unpack_message(OUT var) is overloaded on the type of var; orafce has one function per type
-	$str =~ s/($stmt)DBMS_PIPE\.UNPACK_MESSAGE\s*\(\s*([^,\(\)]+?)\s*\)\s*;/$1$2 := dbms_pipe.unpack_message_text(); \/* TODO orafce: pick unpack_message_text\/_date\/_timestamp\/_number\/_bytea by the type of $2 *\//igms;
-	$str =~ s/($stmt)($proc\s*\()/$1PERFORM $2/igms;
+	return $str;
+}
 
-	# orafce dbms_output.put_line(text) only: cast anything that is not obviously text
-	$str =~ s{(PERFORM\s+DBMS_OUTPUT\.PUT(?:_LINE)?\s*)(\((?:[^()]++|(?2))*\))}{
-		my ($pre, $args) = ($1, $2);
-		my $inner = substr($args, 1, -1);
-		my $top = $inner;
-		1 while ($top =~ s/\([^()]*\)//g);   # keep only the top level
-		($inner =~ /^\s*\?TEXTVALUE\d+\?\s*$/ || $inner =~ /^\s*$/ || $top =~ m{\|\|} || $inner =~ /::text\s*$/i)
-			? "$pre$args" : "$pre(($inner)::text)";
+# The unqualified to_date(text, text) resolves to pg_catalog.to_date, which is searched before the oracle schema
+# even when the oracle schema is first in search_path. It returns a date and silently drops HH24:MI:SS, while an
+# Oracle DATE keeps the time. orafce's oracle.to_date() returns the Oracle-like date with its time part, so use
+# it for the formats that have a time field. A format without a time part keeps to_date(): the result is the same.
+sub fix_to_date_time
+{
+	my ($class, $str) = @_;
+
+	$str =~ s{(?<![\w\.\$#])to_date\s*\(((?:[^(),]|\((?:[^()]|\([^()]*\))*\))*),\s*(\?TEXTVALUE(\d+)\?|'[^']*')\s*\)}{
+		my ($all, $arg, $fmt, $n) = ($&, $1, $2, $3);
+		my $f = defined $n ? ($class->{text_values}{$n} // '') : $fmt;
+		($f =~ /(?<![A-Za-z])(?:HH12|HH24|HH|MI|SSSSS|SS|FF\d?)(?![A-Za-z])/i) ? "oracle.to_date($arg, $fmt)" : $all;
 	}iegs;
 
 	return $str;
@@ -2466,7 +2505,7 @@ sub replace_sys_context
 {
 	my ($class, $str) = @_;
 
-	# USERENV parameter => PG expression
+	# USERENV parameter => PostgreSQL expression
 	my %map = (
 		OS_USER => 'session_user', SESSION_USER => 'session_user', AUTHENTICATED_IDENTITY => 'session_user',
 		BG_JOB_ID => 'pg_backend_pid()',
@@ -2477,7 +2516,7 @@ sub replace_sys_context
 		SERVER_HOST => 'inet_server_addr()',
 		MODULE => "current_setting('application_name')",
 	);
-	# The string literals are masked as ?TEXTVALUEn? when this runs, so resolve them.
+	# String literals are already masked as ?TEXTVALUEn? when this runs: resolve them.
 	my $lit = sub {
 		my $t = shift;
 		$t = $class->{text_values}{$1} // '' if ($t =~ /^\?TEXTVALUE(\d+)\?$/);
@@ -3895,8 +3934,8 @@ sub replace_outer_join
 		die "FATAL: outer join type must be 'left' or 'right' in call to replace_outer_join().\n";
 	}
 
-	# A comment glued to the end of a condition ("col(+) = 1 -- text") would be taken for a part of the
-	# constant below and moved with it: keep the comment placeholder a separate token.
+	# A comment glued to the end of a condition ("col(+) = 1 -- text") would be taken for a part
+	# of the constant below and moved with it: keep the comment placeholder a separate token.
 	$str =~ s/(\S)(\%ORA2PG_COMMENT\d+\%)/$1 $2/g;
 
 	# When we have a right outer join, just rewrite it as a left join to simplify the translation work
@@ -4420,15 +4459,8 @@ sub replace_connect_by
 			push(@rebuild_prior, "$prior_clause[$i] = $prior_clause[$i+1]");
 		}
 		@prior_clause = @rebuild_prior;
-		# Remove table aliases from prior clause (PRIOR may already be lowercased)
-		map {
-			s/\s*PRIOR\s*//is;
-			if (/^\s*(.*?)\s*=\s*(.*?)\s*$/s) {
-				my ($l, $r) = ($1, $2);
-				$l =~ s/^[^\s\.]+\.//s;
-				$_ = "$l = $r";
-			}
-		} @prior_clause;
+		# Remove table aliases from prior clause
+		map { s/\s*PRIOR\s*//is; s/[^\s\.=<>!]+\.//s; } @prior_clause;
 	}
 
 	my $bkup_query = $str;
@@ -4598,38 +4630,6 @@ sub replace_connect_by
 	$final_query .= "\n) SELECT *$into_clause FROM cte$where_clause$union$group_by$order_by";
 
 	return $final_query;
-}
-
-# PG and orafce have no RR/RRRR format fields (to_char prints them literally, to_date misparses).
-# RRRR -> YYYY and RR -> YY; for TO_DATE the century window differs (PG YY: 70-99 => 19xx, 00-69 => 20xx).
-sub fix_rr_date_format
-{
-	my ($class, $str) = @_;
-	my $rr = sub { my $f = shift; $f =~ s/(?<![A-Za-z])RRRR(?![A-Za-z])/YYYY/ig; $f =~ s/(?<![A-Za-z])RR(?![A-Za-z])/YY/ig; return $f; };
-	$str =~ s{\bTO_(?:CHAR|DATE|TIMESTAMP(?:_TZ)?)\s*\((?:[^(),]|\((?:[^()]|\([^()]*\))*\))*,\s*(?:\?TEXTVALUE(\d+)\?|('[^']*'))}{
-		my ($all, $n) = ($&, $1);
-		if (defined $n) {
-			$class->{text_values}{$n} = $rr->($class->{text_values}{$n}) if (defined $class->{text_values}{$n});
-			$all;
-		} else {
-			$all =~ s/('[^']*')$/$rr->($1)/e;
-			$all;
-		}
-	}iegs;
-	return $str;
-}
-
-# Unqualified to_date(text,text) resolves to pg_catalog (searched before oracle) and returns date,
-# silently dropping HH24:MI:SS. Oracle's DATE keeps the time: use orafce's oracle.to_date for such masks.
-sub fix_to_date_time
-{
-	my ($class, $str) = @_;
-	$str =~ s{(?<![\w\.\$#])to_date\s*\(((?:[^(),]|\((?:[^()]|\([^()]*\))*\))*),\s*(\?TEXTVALUE(\d+)\?|'[^']*')\s*\)}{
-		my ($all, $arg, $fmt, $n) = ($&, $1, $2, $3);
-		my $f = defined $n ? ($class->{text_values}{$n} // '') : $fmt;
-		($f =~ /(?<![A-Za-z])(?:HH12|HH24|HH|MI|SSSSS|SS|FF\d?)(?![A-Za-z])/i) ? "oracle.to_date($arg, $fmt)" : $all;
-	}iegs;
-	return $str;
 }
 
 # Drop NLS third argument from TO_CHAR; optional Month -> TMMonth when Russian NLS was requested.

@@ -35,7 +35,7 @@ my $VERSION = $Ora2Pg::VERSION;
 
 $| = 1;
 
-# UTF-8 on stdio before any Cyrillic identifiers (packages, views, procedures)
+# UTF-8 on stdio before any non-ASCII identifier is printed (packages, views, procedures)
 if ($^O !~ /MSWin32|dos/i) {
 	binmode(STDOUT, ":encoding(UTF-8)");
 	binmode(STDERR, ":encoding(UTF-8)");
